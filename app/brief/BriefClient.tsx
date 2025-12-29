@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
-import LZString from "lz-string";
+import { useRouter, useSearchParams } from "next/navigation";
 
 type Source = { title: string; url: string };
 
@@ -14,15 +13,13 @@ type Brief = {
   columnHelp: string[];
   rows: { name: string; values: string[]; notes: string }[];
   sources: Source[];
+  _mode?: string; // demo_no_key / demo_quota / etc (optional)
 };
 
-const STORAGE_KEY = "compare-brief:v1";
+const STORAGE_KEY = "clearpick:v1";
 
 function makeId() {
-  return (
-    Math.random().toString(36).slice(2, 10) +
-    Date.now().toString(36).slice(2, 6)
-  );
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(2, 6);
 }
 
 function readStore(): Record<string, Brief> {
@@ -36,424 +33,414 @@ function readStore(): Record<string, Brief> {
 }
 
 function writeStore(store: Record<string, Brief>) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-}
-
-function saveBrief(id: string, brief: Brief) {
-  const store = readStore();
-  store[id] = brief;
-  writeStore(store);
-}
-
-function loadBrief(id: string): Brief | null {
-  const store = readStore();
-  return store[id] ?? null;
-}
-
-function encodeBrief(brief: Brief): string {
-  return LZString.compressToEncodedURIComponent(JSON.stringify(brief));
-}
-
-function decodeBrief(payload: string): Brief | null {
   try {
-    const json = LZString.decompressFromEncodedURIComponent(payload);
-    if (!json) return null;
-    return JSON.parse(json);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
   } catch {
-    return null;
+    // ignore
   }
 }
 
-async function fetchBrief(params: {
+function encodePortable(obj: any) {
+  // No external deps. Simple, reliable for portfolio.
+  // (URL can be long, but fine for demos.)
+  const json = JSON.stringify(obj);
+  return encodeURIComponent(json);
+}
+
+function decodePortable(s: string) {
+  const json = decodeURIComponent(s);
+  return JSON.parse(json);
+}
+
+async function fetchBrief(payload: {
   query: string;
   constraints: string;
-  criteria?: string[] | null;
+  columns?: string[];
 }): Promise<Brief> {
   const res = await fetch("/api/brief", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
     cache: "no-store",
+    body: JSON.stringify(payload),
   });
 
-  const contentType = res.headers.get("content-type") || "";
   const text = await res.text();
-
-  if (!res.ok) throw new Error(text || `API Error ${res.status}`);
-  if (!contentType.includes("application/json")) {
-    throw new Error(`Expected JSON but got: ${contentType}`);
-  }
+  if (!res.ok) throw new Error(text || "Failed to generate brief");
 
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error("Server returned invalid JSON");
+    throw new Error("Server returned a non-JSON response");
   }
-}
-
-function normalizeCriteria(list: string[]): string[] {
-  const cleaned = list.map((s) => s.trim()).filter(Boolean);
-  while (cleaned.length < 5) cleaned.push("Unknown");
-  return cleaned.slice(0, 5);
-}
-
-function normalizeColumnHelp(list: string[] | undefined): string[] {
-  const cleaned = (list ?? []).map((s) => String(s).trim()).filter(Boolean);
-  while (cleaned.length < 5) cleaned.push("Why it matters: Unknown");
-  return cleaned.slice(0, 5);
 }
 
 export default function BriefClient() {
   const router = useRouter();
   const params = useSearchParams();
 
-  const q = (params.get("q") ?? "").trim();
-  const c = (params.get("c") ?? "").trim();
+  const qParam = (params.get("q") ?? "").trim();
+  const cParam = (params.get("c") ?? "").trim();
   const idParam = (params.get("id") ?? "").trim();
-  const dataParam = (params.get("data") ?? "").trim();
+  const pParam = (params.get("p") ?? "").trim(); // portable payload
 
-  const defaultQuery = "Best noise-cancelling headphones for calls";
+  const defaultQuery = "best noise cancelling headphones for calls";
+  const query = qParam || defaultQuery;
+  const constraints = cParam || "None";
+
+  const [loadedFrom, setLoadedFrom] = useState<string | null>(null);
+  const [id, setId] = useState<string>(idParam || "");
 
   const [data, setData] = useState<Brief | null>(null);
-  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">(
-    "idle"
-  );
+  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [activeId, setActiveId] = useState<string | null>(null);
 
-  const [copiedLocal, setCopiedLocal] = useState(false);
-  const [copiedPortable, setCopiedPortable] = useState(false);
+  // editable criteria (5 columns)
+  const [draftCols, setDraftCols] = useState<string[]>([
+    "Price",
+    "Key feature",
+    "Best for",
+    "Downside",
+    "Notes",
+  ]);
 
-  const [criteriaDraft, setCriteriaDraft] = useState<string[]>(
-    Array(5).fill("")
-  );
-  const [regenLoading, setRegenLoading] = useState(false);
+  const effectiveCols = useMemo(() => {
+    // Always 5, always non-empty strings
+    const base = draftCols.slice(0, 5).map((x) => (x ?? "").trim());
+    while (base.length < 5) base.push("");
+    return base.map((x, idx) => x || `Column ${idx + 1}`);
+  }, [draftCols]);
 
-  const displayQuery = useMemo(() => (q || defaultQuery).trim(), [q]);
-  const displayConstraints = useMemo(() => (c || "").trim(), [c]);
-
+  // Load from Portable param (p=...)
   useEffect(() => {
+    if (!pParam) return;
+    try {
+      const parsed = decodePortable(pParam);
+      if (parsed && parsed.query && parsed.columns && parsed.rows) {
+        setData(parsed as Brief);
+        setStatus("success");
+        setErrorMsg(null);
+        setLoadedFrom("portable link");
+        // sync columns draft
+        if (Array.isArray((parsed as any).columns)) {
+          const cols = (parsed as any).columns.slice(0, 5);
+          while (cols.length < 5) cols.push("");
+          setDraftCols(cols);
+        }
+      }
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pParam]);
+
+  // Load from local storage by id
+  useEffect(() => {
+    if (!idParam) return;
+    try {
+      const store = readStore();
+      const hit = store[idParam];
+      if (hit) {
+        setData(hit);
+        setStatus("success");
+        setErrorMsg(null);
+        setLoadedFrom(`local storage: ${idParam}`);
+        setId(idParam);
+        // sync columns draft
+        const cols = (hit.columns ?? []).slice(0, 5);
+        while (cols.length < 5) cols.push("");
+        setDraftCols(cols);
+      }
+    } catch {
+      // ignore
+    }
+  }, [idParam]);
+
+  // Generate on first visit when nothing loaded
+  useEffect(() => {
+    // if already loaded from portable/local storage, do nothing
+    if (data) return;
+
     let cancelled = false;
 
     async function run() {
-      setCopiedLocal(false);
-      setCopiedPortable(false);
-      setErrorMsg(null);
-      setData(null);
-
-      // 1) portable link
-      if (dataParam) {
-        setStatus("loading");
-        const decoded = decodeBrief(dataParam);
-        if (decoded) {
-          if (cancelled) return;
-
-          const newId = makeId();
-          saveBrief(newId, decoded);
-          setActiveId(newId);
-
-          setData(decoded);
-          setCriteriaDraft(normalizeCriteria(decoded.columns ?? []));
-          setStatus("success");
-          return;
-        } else {
-          if (cancelled) return;
-          setStatus("error");
-          setErrorMsg("This portable link is invalid or corrupted.");
-          return;
-        }
-      }
-
-      // 2) local id link
-      if (idParam) {
-        setStatus("loading");
-        const cached = loadBrief(idParam);
-        if (cached) {
-          if (cancelled) return;
-          setData(cached);
-          setActiveId(idParam);
-          setCriteriaDraft(normalizeCriteria(cached.columns ?? []));
-          setStatus("success");
-          return;
-        } else {
-          if (cancelled) return;
-          setActiveId(idParam);
-          setStatus("error");
-          setErrorMsg(
-            "This link uses local storage and was not found on this browser. Use a portable share link instead."
-          );
-          return;
-        }
-      }
-
-      // 3) generate from API
       setStatus("loading");
+      setErrorMsg(null);
+
       try {
         const result = await fetchBrief({
-          query: displayQuery,
-          constraints: displayConstraints,
+          query,
+          constraints,
+          columns: effectiveCols,
         });
+
         if (cancelled) return;
 
         const newId = makeId();
-        saveBrief(newId, result);
+        setId(newId);
+
+        const store = readStore();
+        store[newId] = result;
+        writeStore(store);
 
         setData(result);
-        setActiveId(newId);
-        setCriteriaDraft(normalizeCriteria(result.columns ?? []));
         setStatus("success");
+        setLoadedFrom(null);
 
+        // keep URL stable with id
         router.replace(`/brief?id=${encodeURIComponent(newId)}`);
       } catch (err: any) {
         if (cancelled) return;
-        setStatus("error");
         setErrorMsg(err?.message ?? "Something went wrong");
+        setStatus("error");
       }
     }
 
     run();
+
     return () => {
       cancelled = true;
     };
-  }, [dataParam, idParam, displayQuery, displayConstraints, router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, constraints]);
 
-  async function copyLocalShareLink() {
-    if (!activeId) return;
-    const url = `${window.location.origin}/brief?id=${encodeURIComponent(activeId)}`;
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopiedLocal(true);
-      setTimeout(() => setCopiedLocal(false), 1200);
-    } catch {
-      prompt("Copy this link:", url);
-    }
-  }
-
-  async function copyPortableShareLink() {
-    if (!data) return;
-    const payload = encodeBrief(data);
-    const url = `${window.location.origin}/brief?data=${payload}`;
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopiedPortable(true);
-      setTimeout(() => setCopiedPortable(false), 1200);
-    } catch {
-      prompt("Copy this link:", url);
-    }
-  }
-
-  async function regenerate() {
-    if (!data) return;
-
-    const criteria = normalizeCriteria(criteriaDraft);
-
-    setRegenLoading(true);
+  async function handleRegenerate() {
+    setStatus("loading");
     setErrorMsg(null);
 
     try {
       const result = await fetchBrief({
-        query: data.query,
-        constraints: data.constraints,
-        criteria,
+        query,
+        constraints,
+        columns: effectiveCols,
       });
 
+      const useId = id || makeId();
+      setId(useId);
+
+      const store = readStore();
+      store[useId] = result;
+      writeStore(store);
+
       setData(result);
-      setCriteriaDraft(normalizeCriteria(result.columns ?? []));
+      setStatus("success");
+      setLoadedFrom(null);
 
-      const id = activeId ?? makeId();
-      setActiveId(id);
-      saveBrief(id, result);
-
-      router.replace(`/brief?id=${encodeURIComponent(id)}`);
+      router.replace(`/brief?id=${encodeURIComponent(useId)}`);
     } catch (err: any) {
-      setErrorMsg(err?.message ?? "Failed to regenerate");
+      setErrorMsg(err?.message ?? "Something went wrong");
       setStatus("error");
-    } finally {
-      setRegenLoading(false);
     }
   }
 
-  const help = useMemo(() => normalizeColumnHelp(data?.columnHelp), [data]);
+  function handleShareLocal() {
+    if (!data || !id) return;
+    // local link (id-based)
+    const url = `${window.location.origin}/brief?id=${encodeURIComponent(id)}`;
+    navigator.clipboard.writeText(url).catch(() => {});
+    alert("Local link copied.");
+  }
+
+  function handleSharePortable() {
+    if (!data) return;
+    // portable payload (works without localStorage)
+    const url = `${window.location.origin}/brief?p=${encodePortable(data)}`;
+    navigator.clipboard.writeText(url).catch(() => {});
+    alert("Portable link copied.");
+  }
 
   return (
-    <main className="min-h-screen p-6">
-      <div className="mx-auto max-w-4xl space-y-6">
-        <div className="flex items-center justify-between">
+    <main className="min-h-screen bg-white text-black">
+      {/* Top bar */}
+      <div className="sticky top-0 z-50 border-b bg-white/90 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
           <button
             onClick={() => router.push("/")}
-            className="text-sm text-gray-500 hover:underline"
+            className="text-sm text-gray-600 hover:text-black"
           >
             ← Back
           </button>
 
+          <div className="text-sm text-gray-700 font-medium">ClearPick</div>
+
           <div className="flex items-center gap-2">
             <button
-              onClick={copyPortableShareLink}
-              disabled={!data || status !== "success"}
-              className="rounded-xl border px-3 py-2 text-sm hover:bg-black hover:text-white disabled:opacity-50"
-              title="Portable share (works for anyone)"
+              onClick={handleSharePortable}
+              className="rounded-xl border px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
             >
-              {copiedPortable ? "Portable Copied!" : "Share (Portable)"}
+              Share (Portable)
             </button>
-
             <button
-              onClick={copyLocalShareLink}
-              disabled={!activeId || status !== "success"}
-              className="rounded-xl border px-3 py-2 text-sm hover:bg-black hover:text-white disabled:opacity-50"
-              title="Local share (same browser only)"
+              onClick={handleShareLocal}
+              className="rounded-xl border px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
             >
-              {copiedLocal ? "Local Copied!" : "Share (Local)"}
+              Share (Local)
+            </button>
+            <button
+              onClick={handleRegenerate}
+              className="rounded-xl bg-black px-3 py-1.5 text-sm text-white hover:bg-gray-900"
+            >
+              Regenerate
             </button>
           </div>
         </div>
+      </div>
 
-        <header className="space-y-2">
-          <h1 className="text-2xl font-semibold">Compare Brief</h1>
+      <div className="mx-auto max-w-6xl px-4 py-10">
+        <div className="space-y-3">
+          <div className="text-xs uppercase tracking-wider text-gray-500">
+            Comparison Grid
+          </div>
 
-          {status === "success" && data && (
-            <>
-              <p className="text-gray-600">
-                Query: <span className="font-medium text-black">{data.query}</span>
-              </p>
-              {data.constraints && (
-                <p className="text-gray-600">
-                  Constraints:{" "}
-                  <span className="font-medium text-black">{data.constraints}</span>
-                </p>
-              )}
-            </>
+          <h1 className="text-4xl font-semibold leading-tight">{query}</h1>
+
+          <div className="text-gray-600">
+            {constraints && constraints !== "None" ? constraints : "No constraints"}
+          </div>
+
+          {loadedFrom && (
+            <div className="text-sm text-gray-500">Loaded via {loadedFrom}</div>
           )}
 
-          {dataParam && (
-            <p className="text-gray-600">
-              Loaded via portable link (works for anyone).
-            </p>
+          {data?._mode && (
+            <div className="inline-flex w-fit items-center rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600">
+              Demo mode
+            </div>
           )}
+        </div>
 
-          {idParam && !dataParam && status === "success" && (
-            <p className="text-gray-600">
-              Loaded via local storage:{" "}
-              <span className="font-medium text-black">{idParam}</span>
-            </p>
-          )}
-        </header>
-
+        {/* Loading / Error */}
         {status === "loading" && (
-          <section className="rounded-2xl border p-5 space-y-2">
+          <section className="mt-8 rounded-2xl border p-6">
             <div className="text-xs uppercase tracking-wider text-gray-500">
               Generating…
             </div>
-            <div className="text-gray-700">Building your brief.</div>
+            <div className="mt-2 text-gray-700">
+              Building a clear comparison grid.
+            </div>
           </section>
         )}
 
-        {(status === "error" || errorMsg) && (
-          <section className="rounded-2xl border p-5 space-y-2">
-            <div className="text-xs uppercase tracking-wider text-red-500">
+        {status === "error" && (
+          <section className="mt-8 rounded-2xl border p-6 space-y-4">
+            <div className="text-xs uppercase tracking-wider text-red-600">
               Error
             </div>
-            <div className="text-gray-700 whitespace-pre-wrap">{errorMsg}</div>
+            <div className="text-sm text-gray-700 whitespace-pre-wrap">
+              {errorMsg}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleRegenerate}
+                className="rounded-xl bg-black px-4 py-2 text-sm text-white"
+              >
+                Retry
+              </button>
+              <button
+                onClick={() => router.push("/")}
+                className="rounded-xl border px-4 py-2 text-sm"
+              >
+                Back
+              </button>
+            </div>
           </section>
         )}
 
+        {/* Main content */}
         {status === "success" && data && (
-          <>
-            <section className="rounded-2xl border p-5 space-y-4">
-              <div className="flex items-center justify-between">
+          <div className="mt-10 space-y-8">
+            {/* Criteria */}
+            <section className="rounded-2xl border p-6">
+              <div className="flex items-start justify-between gap-4">
                 <div>
                   <div className="text-xs uppercase tracking-wider text-gray-500">
                     Criteria
                   </div>
-                  <div className="text-sm text-gray-600">
+                  <div className="mt-1 text-sm text-gray-600">
                     Edit the 5 comparison columns, then regenerate.
                   </div>
                 </div>
 
                 <button
-                  onClick={regenerate}
-                  disabled={regenLoading}
-                  className="rounded-xl bg-black text-white px-4 py-2 text-sm disabled:opacity-50"
+                  onClick={handleRegenerate}
+                  className="rounded-xl bg-black px-4 py-2 text-sm text-white hover:bg-gray-900"
                 >
-                  {regenLoading ? "Regenerating…" : "Regenerate"}
+                  Regenerate
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {criteriaDraft.map((val, idx) => (
-                  <div key={idx} className="space-y-1">
-                    <label className="text-xs text-gray-500">
-                      Column {idx + 1}
-                    </label>
+              <div className="mt-5 grid gap-4 md:grid-cols-2">
+                {Array.from({ length: 5 }).map((_, idx) => (
+                  <label key={idx} className="block">
+                    <div className="text-xs text-gray-500 mb-1">Column {idx + 1}</div>
                     <input
-                      value={val}
+                      value={draftCols[idx] ?? ""}
                       onChange={(e) => {
-                        const next = [...criteriaDraft];
+                        const next = draftCols.slice();
                         next[idx] = e.target.value;
-                        setCriteriaDraft(next);
+                        setDraftCols(next);
                       }}
-                      className="w-full rounded-xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-black/20"
-                      placeholder="e.g., Battery life"
+                      className="w-full rounded-xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
+                      placeholder={`Column ${idx + 1}`}
                     />
-                  </div>
+                  </label>
                 ))}
               </div>
             </section>
 
-            <section className="rounded-2xl border p-5 space-y-2">
+            {/* Recommendation */}
+            <section className="rounded-2xl border p-6">
               <div className="text-xs uppercase tracking-wider text-gray-500">
                 Recommendation
               </div>
-              <div className="text-lg font-semibold">{data.topPick.name}</div>
-              <p className="text-gray-700">{data.topPick.why}</p>
-              <p className="text-gray-500">Trade-off: {data.topPick.tradeoff}</p>
+              <div className="mt-2 text-2xl font-semibold">{data.topPick.name}</div>
+              <p className="mt-2 text-gray-700">{data.topPick.why}</p>
+              <p className="mt-2 text-gray-500">
+                Trade-off: {data.topPick.tradeoff}
+              </p>
             </section>
 
-            <section className="rounded-2xl border p-5 space-y-3">
+            {/* Table */}
+            <section className="rounded-2xl border p-6">
               <div className="text-xs uppercase tracking-wider text-gray-500">
                 Comparison Table
               </div>
 
-              <div className="overflow-x-auto">
+              <div className="mt-4 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="border-b">
                     <tr className="text-left">
-                      <th className="py-2 pr-4">Item</th>
+                      <th className="py-3 pr-4">Item</th>
 
                       {data.columns.map((col, idx) => (
-                        <th key={`${col}-${idx}`} className="py-2 pr-4">
-                          <div className="inline-flex items-center gap-2 relative group">
+                        <th key={`${col}-${idx}`} className="py-3 pr-4">
+                          <div className="flex items-center gap-2">
                             <span>{col}</span>
-
                             <span
-                              className="inline-flex h-5 w-5 items-center justify-center rounded-full border text-[11px] text-gray-600"
-                              aria-label={`Why ${col} matters`}
+                              title={data.columnHelp?.[idx] || ""}
+                              className="inline-flex h-5 w-5 items-center justify-center rounded-full border text-[11px] text-gray-500"
                             >
                               ?
                             </span>
-
-                            <div className="pointer-events-none absolute left-0 top-7 z-10 hidden w-64 rounded-xl border bg-white p-3 text-xs text-gray-700 shadow-sm group-hover:block">
-                              {help[idx] ?? "Why it matters: Unknown"}
-                            </div>
                           </div>
                         </th>
                       ))}
 
-                      <th className="py-2">Notes</th>
+                      <th className="py-3">Notes</th>
                     </tr>
                   </thead>
 
                   <tbody>
-                    {data.rows.map((row) => (
-                      <tr key={row.name} className="border-b last:border-b-0">
-                        <td className="py-3 pr-4 font-medium">{row.name}</td>
+                    {data.rows.map((row, rIdx) => (
+                      <tr key={`${row.name}-${rIdx}`} className="border-b last:border-b-0">
+                        <td className="py-4 pr-4 font-medium">{row.name}</td>
 
-                        {data.columns.map((_, idx) => (
-                          <td key={idx} className="py-3 pr-4">
-                            {row.values?.[idx] ?? "Unknown"}
+                        {data.columns.map((_, cIdx) => (
+                          <td key={`${row.name}-${cIdx}`} className="py-4 pr-4 text-gray-800">
+                            {row.values?.[cIdx] ?? ""}
                           </td>
                         ))}
 
-                        <td className="py-3">{row.notes}</td>
+                        <td className="py-4 text-gray-700">{row.notes}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -461,26 +448,34 @@ export default function BriefClient() {
               </div>
             </section>
 
-            <section className="rounded-2xl border p-5 space-y-3">
+            {/* ✅ Sources (this is the part you couldn't find) */}
+            <section className="rounded-2xl border p-6 space-y-3">
               <div className="text-xs uppercase tracking-wider text-gray-500">
                 Sources
               </div>
-              <ul className="space-y-2">
-                {data.sources.map((s) => (
-                  <li key={`${s.title}-${s.url}`} className="text-sm">
-                    <a
-                      className="underline text-gray-700 hover:text-black"
-                      href={s.url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {s.title}
-                    </a>
-                  </li>
-                ))}
-              </ul>
+
+              {data.sources.length === 0 ? (
+                <div className="text-sm text-gray-500">
+                  Demo mode — live sources will appear when API mode is enabled.
+                </div>
+              ) : (
+                <ul className="space-y-2">
+                  {data.sources.map((s, i) => (
+                    <li key={`${s.url}-${i}`} className="text-sm">
+                      <a
+                        className="underline text-gray-700 hover:text-black"
+                        href={s.url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {s.title}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </section>
-          </>
+          </div>
         )}
       </div>
     </main>
