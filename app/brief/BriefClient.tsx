@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
+import LZString from "lz-string";
 
 type Source = { title: string; url: string };
 
@@ -9,11 +10,11 @@ type Brief = {
   query: string;
   constraints: string;
   topPick: { name: string; why: string; tradeoff: string };
-  columns: string[];
-  columnHelp: string[];
+  columns: string[]; // (예: Price, Data, eSIM...)
+  columnHelp: string[]; // 각 컬럼 도움말 (없으면 빈 문자열)
   rows: { name: string; values: string[]; notes: string }[];
   sources: Source[];
-  _mode?: string; // demo_no_key / demo_quota / etc (optional)
+  _mode?: string; // demo_* 등
 };
 
 const STORAGE_KEY = "clearpick:v1";
@@ -33,35 +34,19 @@ function readStore(): Record<string, Brief> {
 }
 
 function writeStore(store: Record<string, Brief>) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-  } catch {
-    // ignore
-  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
 }
 
-function encodePortable(obj: any) {
-  // No external deps. Simple, reliable for portfolio.
-  // (URL can be long, but fine for demos.)
-  const json = JSON.stringify(obj);
-  return encodeURIComponent(json);
-}
-
-function decodePortable(s: string) {
-  const json = decodeURIComponent(s);
-  return JSON.parse(json);
-}
-
-async function fetchBrief(payload: {
+async function fetchBrief(input: {
   query: string;
   constraints: string;
-  columns?: string[];
+  columns: string[];
 }): Promise<Brief> {
   const res = await fetch("/api/brief", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
     cache: "no-store",
-    body: JSON.stringify(payload),
   });
 
   const text = await res.text();
@@ -81,85 +66,27 @@ export default function BriefClient() {
   const qParam = (params.get("q") ?? "").trim();
   const cParam = (params.get("c") ?? "").trim();
   const idParam = (params.get("id") ?? "").trim();
-  const pParam = (params.get("p") ?? "").trim(); // portable payload
 
-  const defaultQuery = "best noise cancelling headphones for calls";
-  const query = qParam || defaultQuery;
-  const constraints = cParam || "None";
-
-  const [loadedFrom, setLoadedFrom] = useState<string | null>(null);
-  const [id, setId] = useState<string>(idParam || "");
+  const defaultQuery = "Best noise cancelling headphones for calls";
 
   const [data, setData] = useState<Brief | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // editable criteria (5 columns)
-  const [draftCols, setDraftCols] = useState<string[]>([
-    "Price",
-    "Key feature",
-    "Best for",
-    "Downside",
-    "Notes",
-  ]);
+  // 5개 컬럼 편집 UI (원하면 나중에 개수 변경 가능)
+  const [col1, setCol1] = useState("Price");
+  const [col2, setCol2] = useState("Key feature");
+  const [col3, setCol3] = useState("Best for");
+  const [col4, setCol4] = useState("Downside");
+  const [col5, setCol5] = useState("Notes");
 
-  const effectiveCols = useMemo(() => {
-    // Always 5, always non-empty strings
-    const base = draftCols.slice(0, 5).map((x) => (x ?? "").trim());
-    while (base.length < 5) base.push("");
-    return base.map((x, idx) => x || `Column ${idx + 1}`);
-  }, [draftCols]);
+  const columns = useMemo(() => [col1, col2, col3, col4, col5].map((s) => s.trim()), [col1, col2, col3, col4, col5]);
 
-  // Load from Portable param (p=...)
+  const query = qParam || defaultQuery;
+  const constraints = cParam || "";
+
+  // Load: 1) id 기반(localStorage) 우선 → 없으면 API 생성
   useEffect(() => {
-    if (!pParam) return;
-    try {
-      const parsed = decodePortable(pParam);
-      if (parsed && parsed.query && parsed.columns && parsed.rows) {
-        setData(parsed as Brief);
-        setStatus("success");
-        setErrorMsg(null);
-        setLoadedFrom("portable link");
-        // sync columns draft
-        if (Array.isArray((parsed as any).columns)) {
-          const cols = (parsed as any).columns.slice(0, 5);
-          while (cols.length < 5) cols.push("");
-          setDraftCols(cols);
-        }
-      }
-    } catch {
-      // ignore
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pParam]);
-
-  // Load from local storage by id
-  useEffect(() => {
-    if (!idParam) return;
-    try {
-      const store = readStore();
-      const hit = store[idParam];
-      if (hit) {
-        setData(hit);
-        setStatus("success");
-        setErrorMsg(null);
-        setLoadedFrom(`local storage: ${idParam}`);
-        setId(idParam);
-        // sync columns draft
-        const cols = (hit.columns ?? []).slice(0, 5);
-        while (cols.length < 5) cols.push("");
-        setDraftCols(cols);
-      }
-    } catch {
-      // ignore
-    }
-  }, [idParam]);
-
-  // Generate on first visit when nothing loaded
-  useEffect(() => {
-    // if already loaded from portable/local storage, do nothing
-    if (data) return;
-
     let cancelled = false;
 
     async function run() {
@@ -167,27 +94,35 @@ export default function BriefClient() {
       setErrorMsg(null);
 
       try {
-        const result = await fetchBrief({
-          query,
-          constraints,
-          columns: effectiveCols,
-        });
+        if (idParam) {
+          const store = readStore();
+          const cached = store[idParam];
+          if (cached) {
+            if (cancelled) return;
+            setData(cached);
+            setStatus("success");
+            return;
+          }
+        }
 
+        const result = await fetchBrief({ query, constraints, columns });
         if (cancelled) return;
-
-        const newId = makeId();
-        setId(newId);
-
-        const store = readStore();
-        store[newId] = result;
-        writeStore(store);
 
         setData(result);
         setStatus("success");
-        setLoadedFrom(null);
 
-        // keep URL stable with id
-        router.replace(`/brief?id=${encodeURIComponent(newId)}`);
+        // 자동 저장(로컬 공유용)
+        const id = idParam || makeId();
+        const store = readStore();
+        store[id] = result;
+        writeStore(store);
+
+        // URL에 id 유지(새로고침/공유 안정)
+        if (!idParam) {
+          const next = new URLSearchParams(params.toString());
+          next.set("id", id);
+          router.replace(`/brief?${next.toString()}`);
+        }
       } catch (err: any) {
         if (cancelled) return;
         setErrorMsg(err?.message ?? "Something went wrong");
@@ -196,88 +131,81 @@ export default function BriefClient() {
     }
 
     run();
-
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, constraints]);
+  }, [query, constraints, idParam]);
 
-  async function handleRegenerate() {
-    setStatus("loading");
-    setErrorMsg(null);
+  function onRegenerate() {
+    const next = new URLSearchParams(params.toString());
+    next.set("q", query);
+    if (constraints) next.set("c", constraints);
+    // id를 유지해도 되지만, 결과 새로 만들 때는 새 id로 저장되는 편이 관리 쉬움
+    next.delete("id");
+    router.push(`/brief?${next.toString()}`);
+  }
+
+  function onShareLocal() {
+    // 현재 URL 그대로 복사 (id 포함이면 로컬스토리지 기반 공유)
+    navigator.clipboard.writeText(window.location.href);
+    alert("Link copied (local).");
+  }
+
+  function onSharePortable() {
+    // data를 URL에 압축해서 담기 (기기/브라우저 달라도 열리게)
+    if (!data) return;
+    const payload = JSON.stringify(data);
+    const compressed = LZString.compressToEncodedURIComponent(payload);
+
+    const base = `${window.location.origin}/brief`;
+    const url = `${base}?p=${compressed}`;
+    navigator.clipboard.writeText(url);
+    alert("Link copied (portable).");
+  }
+
+  // portable 링크(p=...) 열었을 때
+  useEffect(() => {
+    const p = (params.get("p") ?? "").trim();
+    if (!p) return;
 
     try {
-      const result = await fetchBrief({
-        query,
-        constraints,
-        columns: effectiveCols,
-      });
-
-      const useId = id || makeId();
-      setId(useId);
-
-      const store = readStore();
-      store[useId] = result;
-      writeStore(store);
-
-      setData(result);
+      const json = LZString.decompressFromEncodedURIComponent(p);
+      if (!json) return;
+      const parsed = JSON.parse(json) as Brief;
+      setData(parsed);
       setStatus("success");
-      setLoadedFrom(null);
-
-      router.replace(`/brief?id=${encodeURIComponent(useId)}`);
-    } catch (err: any) {
-      setErrorMsg(err?.message ?? "Something went wrong");
-      setStatus("error");
+      setErrorMsg(null);
+    } catch {
+      // ignore
     }
-  }
-
-  function handleShareLocal() {
-    if (!data || !id) return;
-    // local link (id-based)
-    const url = `${window.location.origin}/brief?id=${encodeURIComponent(id)}`;
-    navigator.clipboard.writeText(url).catch(() => {});
-    alert("Local link copied.");
-  }
-
-  function handleSharePortable() {
-    if (!data) return;
-    // portable payload (works without localStorage)
-    const url = `${window.location.origin}/brief?p=${encodePortable(data)}`;
-    navigator.clipboard.writeText(url).catch(() => {});
-    alert("Portable link copied.");
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
-    <main className="min-h-screen bg-white text-black">
+    <main className="min-h-screen bg-gray-50">
       {/* Top bar */}
-      <div className="sticky top-0 z-50 border-b bg-white/90 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+      <div className="sticky top-0 z-20 border-b border-gray-200 bg-white/90 backdrop-blur">
+        <div className="mx-auto max-w-5xl px-6 py-3 flex items-center justify-between">
           <button
             onClick={() => router.push("/")}
-            className="text-sm text-gray-600 hover:text-black"
+            className="text-sm font-medium text-gray-600 hover:text-gray-900"
           >
             ← Back
           </button>
 
-          <div className="text-sm text-gray-700 font-medium">ClearPick</div>
+          <div className="text-sm font-semibold text-gray-900">ClearPick</div>
 
           <div className="flex items-center gap-2">
             <button
-              onClick={handleSharePortable}
-              className="rounded-xl border px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+              onClick={onSharePortable}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
             >
-              Share (Portable)
+              Share
             </button>
             <button
-              onClick={handleShareLocal}
-              className="rounded-xl border px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
-            >
-              Share (Local)
-            </button>
-            <button
-              onClick={handleRegenerate}
-              className="rounded-xl bg-black px-3 py-1.5 text-sm text-white hover:bg-gray-900"
+              onClick={onRegenerate}
+              className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700"
             >
               Regenerate
             </button>
@@ -285,59 +213,133 @@ export default function BriefClient() {
         </div>
       </div>
 
-      <div className="mx-auto max-w-6xl px-4 py-10">
-        <div className="space-y-3">
-          <div className="text-xs uppercase tracking-wider text-gray-500">
+      <div className="mx-auto max-w-5xl px-6 py-10 space-y-10">
+        {/* Header */}
+        <header className="space-y-3">
+          <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
             Comparison Grid
           </div>
 
-          <h1 className="text-4xl font-semibold leading-tight">{query}</h1>
+          <h1 className="text-3xl font-semibold text-gray-900">{query}</h1>
 
-          <div className="text-gray-600">
-            {constraints && constraints !== "None" ? constraints : "No constraints"}
-          </div>
-
-          {loadedFrom && (
-            <div className="text-sm text-gray-500">Loaded via {loadedFrom}</div>
-          )}
+          <p className="text-sm text-gray-500">
+            {constraints ? `Constraints: ${constraints}` : "No constraints"}
+          </p>
 
           {data?._mode && (
-            <div className="inline-flex w-fit items-center rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600">
-              Demo mode
-            </div>
+            <p className="text-xs text-gray-400">Mode: {data._mode}</p>
           )}
-        </div>
+        </header>
 
-        {/* Loading / Error */}
+        {/* Criteria */}
+        <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
+                Criteria
+              </div>
+              <p className="text-sm text-gray-500 mt-1">
+                Edit columns to fit your question, then regenerate.
+              </p>
+            </div>
+
+            <button
+              onClick={onRegenerate}
+              className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-black"
+            >
+              Regenerate
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <label className="space-y-2">
+              <div className="text-xs font-medium text-gray-500">Column 1</div>
+              <input
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                value={col1}
+                onChange={(e) => setCol1(e.target.value)}
+              />
+            </label>
+
+            <label className="space-y-2">
+              <div className="text-xs font-medium text-gray-500">Column 2</div>
+              <input
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                value={col2}
+                onChange={(e) => setCol2(e.target.value)}
+              />
+            </label>
+
+            <label className="space-y-2">
+              <div className="text-xs font-medium text-gray-500">Column 3</div>
+              <input
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                value={col3}
+                onChange={(e) => setCol3(e.target.value)}
+              />
+            </label>
+
+            <label className="space-y-2">
+              <div className="text-xs font-medium text-gray-500">Column 4</div>
+              <input
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                value={col4}
+                onChange={(e) => setCol4(e.target.value)}
+              />
+            </label>
+
+            <label className="space-y-2 sm:col-span-2">
+              <div className="text-xs font-medium text-gray-500">Column 5</div>
+              <input
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                value={col5}
+                onChange={(e) => setCol5(e.target.value)}
+              />
+            </label>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <button
+              onClick={onShareLocal}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Share (local)
+            </button>
+
+            <div className="text-xs text-gray-400">
+              Tip: Portable share works across devices.
+            </div>
+          </div>
+        </section>
+
+        {/* States */}
         {status === "loading" && (
-          <section className="mt-8 rounded-2xl border p-6">
-            <div className="text-xs uppercase tracking-wider text-gray-500">
-              Generating…
+          <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-2">
+            <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
+              Generating
             </div>
-            <div className="mt-2 text-gray-700">
-              Building a clear comparison grid.
-            </div>
+            <p className="text-sm text-gray-600">Building a clean comparison grid…</p>
           </section>
         )}
 
         {status === "error" && (
-          <section className="mt-8 rounded-2xl border p-6 space-y-4">
-            <div className="text-xs uppercase tracking-wider text-red-600">
+          <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-4">
+            <div className="text-sm font-medium tracking-wide uppercase text-red-600">
               Error
             </div>
-            <div className="text-sm text-gray-700 whitespace-pre-wrap">
-              {errorMsg}
-            </div>
+            <p className="text-sm text-gray-700 whitespace-pre-wrap">
+              {errorMsg || "Failed to generate brief"}
+            </p>
             <div className="flex gap-2">
               <button
-                onClick={handleRegenerate}
-                className="rounded-xl bg-black px-4 py-2 text-sm text-white"
+                onClick={onRegenerate}
+                className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-black"
               >
                 Retry
               </button>
               <button
                 onClick={() => router.push("/")}
-                className="rounded-xl border px-4 py-2 text-sm"
+                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
                 Back
               </button>
@@ -345,102 +347,73 @@ export default function BriefClient() {
           </section>
         )}
 
-        {/* Main content */}
+        {/* Content */}
         {status === "success" && data && (
-          <div className="mt-10 space-y-8">
-            {/* Criteria */}
-            <section className="rounded-2xl border p-6">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <div className="text-xs uppercase tracking-wider text-gray-500">
-                    Criteria
-                  </div>
-                  <div className="mt-1 text-sm text-gray-600">
-                    Edit the 5 comparison columns, then regenerate.
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleRegenerate}
-                  className="rounded-xl bg-black px-4 py-2 text-sm text-white hover:bg-gray-900"
-                >
-                  Regenerate
-                </button>
-              </div>
-
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
-                {Array.from({ length: 5 }).map((_, idx) => (
-                  <label key={idx} className="block">
-                    <div className="text-xs text-gray-500 mb-1">Column {idx + 1}</div>
-                    <input
-                      value={draftCols[idx] ?? ""}
-                      onChange={(e) => {
-                        const next = draftCols.slice();
-                        next[idx] = e.target.value;
-                        setDraftCols(next);
-                      }}
-                      className="w-full rounded-xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
-                      placeholder={`Column ${idx + 1}`}
-                    />
-                  </label>
-                ))}
-              </div>
-            </section>
-
+          <>
             {/* Recommendation */}
-            <section className="rounded-2xl border p-6">
-              <div className="text-xs uppercase tracking-wider text-gray-500">
+            <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-3">
+              <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
                 Recommendation
               </div>
-              <div className="mt-2 text-2xl font-semibold">{data.topPick.name}</div>
-              <p className="mt-2 text-gray-700">{data.topPick.why}</p>
-              <p className="mt-2 text-gray-500">
-                Trade-off: {data.topPick.tradeoff}
+
+              <div className="text-xl font-semibold text-gray-900">
+                {data.topPick?.name || "Top pick"}
+              </div>
+
+              <p className="text-base text-gray-800">
+                {data.topPick?.why || "Clear reason."}
+              </p>
+
+              <p className="text-sm text-gray-500">
+                Trade-off: {data.topPick?.tradeoff || "—"}
               </p>
             </section>
 
             {/* Table */}
-            <section className="rounded-2xl border p-6">
-              <div className="text-xs uppercase tracking-wider text-gray-500">
-                Comparison Table
+            <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-4">
+              <div className="flex items-end justify-between gap-4">
+                <div>
+                  <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
+                    Comparison
+                  </div>
+                  <p className="text-sm text-gray-500 mt-1">
+                    Short, scannable values. “—” means unknown.
+                  </p>
+                </div>
               </div>
 
-              <div className="mt-4 overflow-x-auto">
+              <div className="overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead className="border-b">
-                    <tr className="text-left">
-                      <th className="py-3 pr-4">Item</th>
+                  <thead>
+                    <tr className="border-b border-gray-200 text-gray-500">
+                      <th className="py-3 text-left font-medium pr-4">Item</th>
 
                       {data.columns.map((col, idx) => (
-                        <th key={`${col}-${idx}`} className="py-3 pr-4">
-                          <div className="flex items-center gap-2">
-                            <span>{col}</span>
-                            <span
-                              title={data.columnHelp?.[idx] || ""}
-                              className="inline-flex h-5 w-5 items-center justify-center rounded-full border text-[11px] text-gray-500"
-                            >
-                              ?
-                            </span>
-                          </div>
+                        <th key={`${col}-${idx}`} className="py-3 text-left font-medium pr-4">
+                          {col}
                         </th>
                       ))}
 
-                      <th className="py-3">Notes</th>
+                      <th className="py-3 text-left font-medium">Notes</th>
                     </tr>
                   </thead>
 
                   <tbody>
                     {data.rows.map((row, rIdx) => (
-                      <tr key={`${row.name}-${rIdx}`} className="border-b last:border-b-0">
-                        <td className="py-4 pr-4 font-medium">{row.name}</td>
+                      <tr key={`${row.name}-${rIdx}`} className="border-b last:border-0">
+                        <td className="py-3 pr-4 font-medium text-gray-900 whitespace-nowrap">
+                          {row.name}
+                        </td>
 
                         {data.columns.map((_, cIdx) => (
-                          <td key={`${row.name}-${cIdx}`} className="py-4 pr-4 text-gray-800">
-                            {row.values?.[cIdx] ?? ""}
+                          <td key={`${row.name}-${cIdx}`} className="py-3 pr-4 text-gray-800">
+                            {(row.values?.[cIdx] ?? "").trim() || "—"}
                           </td>
                         ))}
 
-                        <td className="py-4 text-gray-700">{row.notes}</td>
+                        <td className="py-3 text-gray-500">
+                          {(row.notes ?? "").trim() || "—"}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -448,34 +421,32 @@ export default function BriefClient() {
               </div>
             </section>
 
-            {/* ✅ Sources (this is the part you couldn't find) */}
-            <section className="rounded-2xl border p-6 space-y-3">
-              <div className="text-xs uppercase tracking-wider text-gray-500">
+            {/* Sources */}
+            <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-3">
+              <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
                 Sources
               </div>
 
-              {data.sources.length === 0 ? (
-                <div className="text-sm text-gray-500">
-                  Demo mode — live sources will appear when API mode is enabled.
-                </div>
-              ) : (
+              {data.sources?.length ? (
                 <ul className="space-y-2">
-                  {data.sources.map((s, i) => (
-                    <li key={`${s.url}-${i}`} className="text-sm">
+                  {data.sources.map((s, idx) => (
+                    <li key={`${s.url}-${idx}`} className="text-sm">
                       <a
-                        className="underline text-gray-700 hover:text-black"
                         href={s.url}
                         target="_blank"
                         rel="noreferrer"
+                        className="text-blue-700 hover:text-blue-900 underline underline-offset-2"
                       >
-                        {s.title}
+                        {s.title || s.url}
                       </a>
                     </li>
                   ))}
                 </ul>
+              ) : (
+                <p className="text-sm text-gray-500">No sources provided.</p>
               )}
             </section>
-          </div>
+          </>
         )}
       </div>
     </main>

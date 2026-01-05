@@ -3,7 +3,7 @@ import BriefClient from "./BriefClient";
 
 export default function BriefPage() {
   return (
-    <Suspense fallback={<div className="p-6 text-sm text-gray-600">Loading…</div>}>
+    <Suspense fallback={<div className="min-h-screen bg-gray-50" />}>
       <BriefClient />
     </Suspense>
   );
