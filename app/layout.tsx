@@ -1,25 +1,28 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { Inter } from "next/font/google";
-
-const inter = Inter({
-  subsets: ["latin"],
-  display: "swap",
-  variable: "--font-sans",
-});
 
 export const metadata: Metadata = {
   title: "ClearPick",
-  description: "Compare faster. Decide clearer.",
+  description: "Turn any question into a clean comparison grid.",
   applicationName: "ClearPick",
-  themeColor: "#2563eb",
+  appleWebApp: {
+    capable: true,
+    title: "ClearPick",
+    statusBarStyle: "default",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#ffffff",
 };
 
 export default function RootLayout({
   children,
-}: Readonly<{ children: React.ReactNode }>) {
+}: {
+  children: React.ReactNode;
+}) {
   return (
-    <html lang="en" className={inter.variable}>
+    <html lang="en">
       <body>{children}</body>
     </html>
   );
