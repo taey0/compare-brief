@@ -10,17 +10,20 @@ type Brief = {
   query: string;
   constraints: string;
   topPick: { name: string; why: string; tradeoff: string };
-  columns: string[]; // (예: Price, Data, eSIM...)
-  columnHelp: string[]; // 각 컬럼 도움말 (없으면 빈 문자열)
+  columns: string[];
+  columnHelp: string[];
   rows: { name: string; values: string[]; notes: string }[];
   sources: Source[];
-  _mode?: string; // demo_* 등
+  _mode?: string; // demo_no_key / demo_quota / live ...
 };
 
 const STORAGE_KEY = "clearpick:v1";
 
-function makeId() {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(2, 6);
+function clampText(s: string, max = 130) {
+  const t = (s ?? "").toString().trim();
+  if (!t) return "";
+  if (t.length <= max) return t;
+  return t.slice(0, max - 1).trimEnd() + "…";
 }
 
 function readStore(): Record<string, Brief> {
@@ -34,10 +37,12 @@ function readStore(): Record<string, Brief> {
 }
 
 function writeStore(store: Record<string, Brief>) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  } catch {}
 }
 
-async function fetchBrief(input: {
+async function fetchBrief(payload: {
   query: string;
   constraints: string;
   columns: string[];
@@ -45,7 +50,7 @@ async function fetchBrief(input: {
   const res = await fetch("/api/brief", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
+    body: JSON.stringify(payload),
     cache: "no-store",
   });
 
@@ -59,6 +64,21 @@ async function fetchBrief(input: {
   }
 }
 
+function encodePortable(b: Brief) {
+  const json = JSON.stringify(b);
+  return LZString.compressToEncodedURIComponent(json);
+}
+
+function decodePortable(s: string): Brief | null {
+  try {
+    const json = LZString.decompressFromEncodedURIComponent(s);
+    if (!json) return null;
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
 export default function BriefClient() {
   const router = useRouter();
   const params = useSearchParams();
@@ -66,66 +86,70 @@ export default function BriefClient() {
   const qParam = (params.get("q") ?? "").trim();
   const cParam = (params.get("c") ?? "").trim();
   const idParam = (params.get("id") ?? "").trim();
+  const dataParam = (params.get("data") ?? "").trim();
 
   const defaultQuery = "Best noise cancelling headphones for calls";
 
+  const [columns, setColumns] = useState<string[]>([
+    "Price",
+    "Key feature",
+    "Best for",
+    "Drawback",
+    "Where to buy",
+  ]);
+
   const [data, setData] = useState<Brief | null>(null);
-  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">(
+    "idle"
+  );
+  const [errorMsg, setErrorMsg] = useState<string>("");
 
-  // 5개 컬럼 편집 UI (원하면 나중에 개수 변경 가능)
-  const [col1, setCol1] = useState("Price");
-  const [col2, setCol2] = useState("Key feature");
-  const [col3, setCol3] = useState("Best for");
-  const [col4, setCol4] = useState("Downside");
-  const [col5, setCol5] = useState("Notes");
+  const query = useMemo(() => qParam || defaultQuery, [qParam]);
+  const constraints = useMemo(() => cParam || "", [cParam]);
 
-  const columns = useMemo(() => [col1, col2, col3, col4, col5].map((s) => s.trim()), [col1, col2, col3, col4, col5]);
-
-  const query = qParam || defaultQuery;
-  const constraints = cParam || "";
-
-  // Load: 1) id 기반(localStorage) 우선 → 없으면 API 생성
+  // Load shared links
   useEffect(() => {
+    if (dataParam) {
+      const decoded = decodePortable(dataParam);
+      if (decoded) {
+        setData(decoded);
+        setStatus("success");
+      }
+    }
+  }, [dataParam]);
+
+  // Load local storage by id
+  useEffect(() => {
+    if (!idParam) return;
+    const store = readStore();
+    const found = store[idParam];
+    if (found) {
+      setData(found);
+      setStatus("success");
+    }
+  }, [idParam]);
+
+  // Generate (only if not loaded from share/local)
+  useEffect(() => {
+    if (dataParam) return;
+    if (idParam) return;
+
     let cancelled = false;
 
     async function run() {
       setStatus("loading");
-      setErrorMsg(null);
+      setErrorMsg("");
+      setData(null);
 
       try {
-        if (idParam) {
-          const store = readStore();
-          const cached = store[idParam];
-          if (cached) {
-            if (cancelled) return;
-            setData(cached);
-            setStatus("success");
-            return;
-          }
-        }
-
         const result = await fetchBrief({ query, constraints, columns });
         if (cancelled) return;
 
         setData(result);
         setStatus("success");
-
-        // 자동 저장(로컬 공유용)
-        const id = idParam || makeId();
-        const store = readStore();
-        store[id] = result;
-        writeStore(store);
-
-        // URL에 id 유지(새로고침/공유 안정)
-        if (!idParam) {
-          const next = new URLSearchParams(params.toString());
-          next.set("id", id);
-          router.replace(`/brief?${next.toString()}`);
-        }
-      } catch (err: any) {
+      } catch (e: any) {
         if (cancelled) return;
-        setErrorMsg(err?.message ?? "Something went wrong");
+        setErrorMsg(e?.message ?? "Failed to generate brief");
         setStatus("error");
       }
     }
@@ -134,285 +158,229 @@ export default function BriefClient() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, constraints, idParam]);
+  }, [query, constraints, columns, dataParam, idParam]);
 
-  function onRegenerate() {
-    const next = new URLSearchParams(params.toString());
-    next.set("q", query);
-    if (constraints) next.set("c", constraints);
-    // id를 유지해도 되지만, 결과 새로 만들 때는 새 id로 저장되는 편이 관리 쉬움
-    next.delete("id");
-    router.push(`/brief?${next.toString()}`);
-  }
-
-  function onShareLocal() {
-    // 현재 URL 그대로 복사 (id 포함이면 로컬스토리지 기반 공유)
-    navigator.clipboard.writeText(window.location.href);
-    alert("Link copied (local).");
-  }
-
-  function onSharePortable() {
-    // data를 URL에 압축해서 담기 (기기/브라우저 달라도 열리게)
+  function shareLocal() {
     if (!data) return;
-    const payload = JSON.stringify(data);
-    const compressed = LZString.compressToEncodedURIComponent(payload);
-
-    const base = `${window.location.origin}/brief`;
-    const url = `${base}?p=${compressed}`;
-    navigator.clipboard.writeText(url);
-    alert("Link copied (portable).");
+    const store = readStore();
+    const id = Math.random().toString(36).slice(2, 10);
+    store[id] = data;
+    writeStore(store);
+    router.push(`/brief?id=${encodeURIComponent(id)}`);
   }
 
-  // portable 링크(p=...) 열었을 때
-  useEffect(() => {
-    const p = (params.get("p") ?? "").trim();
-    if (!p) return;
+  function sharePortable() {
+    if (!data) return;
+    const packed = encodePortable(data);
+    router.push(`/brief?data=${packed}`);
+  }
 
-    try {
-      const json = LZString.decompressFromEncodedURIComponent(p);
-      if (!json) return;
-      const parsed = JSON.parse(json) as Brief;
-      setData(parsed);
-      setStatus("success");
-      setErrorMsg(null);
-    } catch {
-      // ignore
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  function regenerate() {
+    router.push(`/brief?q=${encodeURIComponent(query)}&c=${encodeURIComponent(constraints)}`);
+  }
 
   return (
-    <main className="min-h-screen bg-gray-50">
-      {/* Top bar */}
-      <div className="sticky top-0 z-20 border-b border-gray-200 bg-white/90 backdrop-blur">
-        <div className="mx-auto max-w-5xl px-6 py-3 flex items-center justify-between">
-          <button
-            onClick={() => router.push("/")}
-            className="text-sm font-medium text-gray-600 hover:text-gray-900"
-          >
+    <main>
+      <div className="container">
+        {/* Top bar */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <button className="btn" onClick={() => router.push("/")}>
             ← Back
           </button>
 
-          <div className="text-sm font-semibold text-gray-900">ClearPick</div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onSharePortable}
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Share
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <div className="label">ClearPick</div>
+            <button className="btn" onClick={sharePortable} disabled={!data}>
+              Share (Portable)
             </button>
-            <button
-              onClick={onRegenerate}
-              className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-            >
+            <button className="btn" onClick={shareLocal} disabled={!data}>
+              Share (Local)
+            </button>
+            <button className="btn btnPrimary" onClick={regenerate}>
               Regenerate
             </button>
           </div>
         </div>
-      </div>
 
-      <div className="mx-auto max-w-5xl px-6 py-10 space-y-10">
+        <div style={{ height: 18 }} />
+
         {/* Header */}
-        <header className="space-y-3">
-          <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
-            Comparison Grid
+        <div className="label">COMPARISON GRID</div>
+        <div style={{ height: 10 }} />
+        <h1 className="h1">{query}</h1>
+        <div style={{ height: 10 }} />
+        <p className="sub">
+          {constraints ? `Constraints: ${constraints}` : "No constraints"}
+          {data?._mode ? ` · Mode: ${data._mode}` : ""}
+        </p>
+
+        <div style={{ height: 20 }} />
+
+        {/* Criteria editor */}
+        <section className="card" style={{ padding: 18 }}>
+          <div className="label" style={{ marginBottom: 10 }}>
+            Criteria
           </div>
-
-          <h1 className="text-3xl font-semibold text-gray-900">{query}</h1>
-
-          <p className="text-sm text-gray-500">
-            {constraints ? `Constraints: ${constraints}` : "No constraints"}
+          <p className="sub" style={{ fontSize: 14, marginBottom: 14 }}>
+            Edit up to 5 columns, then regenerate.
           </p>
 
-          {data?._mode && (
-            <p className="text-xs text-gray-400">Mode: {data._mode}</p>
-          )}
-        </header>
-
-        {/* Criteria */}
-        <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
-                Criteria
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+              gap: 12,
+            }}
+          >
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i}>
+                <div className="label" style={{ marginBottom: 6 }}>
+                  Column {i + 1}
+                </div>
+                <input
+                  className="input"
+                  value={columns[i] ?? ""}
+                  onChange={(e) => {
+                    const next = [...columns];
+                    next[i] = e.target.value;
+                    setColumns(next);
+                  }}
+                  placeholder={`e.g. ${["Price", "Battery", "Comfort", "Shipping", "Warranty"][i]}`}
+                />
               </div>
-              <p className="text-sm text-gray-500 mt-1">
-                Edit columns to fit your question, then regenerate.
-              </p>
-            </div>
-
-            <button
-              onClick={onRegenerate}
-              className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-black"
-            >
-              Regenerate
-            </button>
+            ))}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <label className="space-y-2">
-              <div className="text-xs font-medium text-gray-500">Column 1</div>
-              <input
-                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                value={col1}
-                onChange={(e) => setCol1(e.target.value)}
-              />
-            </label>
-
-            <label className="space-y-2">
-              <div className="text-xs font-medium text-gray-500">Column 2</div>
-              <input
-                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                value={col2}
-                onChange={(e) => setCol2(e.target.value)}
-              />
-            </label>
-
-            <label className="space-y-2">
-              <div className="text-xs font-medium text-gray-500">Column 3</div>
-              <input
-                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                value={col3}
-                onChange={(e) => setCol3(e.target.value)}
-              />
-            </label>
-
-            <label className="space-y-2">
-              <div className="text-xs font-medium text-gray-500">Column 4</div>
-              <input
-                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                value={col4}
-                onChange={(e) => setCol4(e.target.value)}
-              />
-            </label>
-
-            <label className="space-y-2 sm:col-span-2">
-              <div className="text-xs font-medium text-gray-500">Column 5</div>
-              <input
-                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                value={col5}
-                onChange={(e) => setCol5(e.target.value)}
-              />
-            </label>
-          </div>
-
-          <div className="flex items-center justify-between">
-            <button
-              onClick={onShareLocal}
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Share (local)
-            </button>
-
-            <div className="text-xs text-gray-400">
-              Tip: Portable share works across devices.
-            </div>
-          </div>
+          <div style={{ height: 12 }} />
+          <button className="btn btnPrimary" onClick={regenerate}>
+            Regenerate
+          </button>
         </section>
 
-        {/* States */}
+        <div style={{ height: 16 }} />
+
+        {/* Loading / Error */}
         {status === "loading" && (
-          <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-2">
-            <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
-              Generating
-            </div>
-            <p className="text-sm text-gray-600">Building a clean comparison grid…</p>
+          <section className="card" style={{ padding: 18 }}>
+            <div className="label">Generating…</div>
+            <div style={{ height: 8 }} />
+            <p className="sub">Pickle is comparing options.</p>
           </section>
         )}
 
         {status === "error" && (
-          <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-4">
-            <div className="text-sm font-medium tracking-wide uppercase text-red-600">
+          <section className="card" style={{ padding: 18 }}>
+            <div className="label" style={{ color: "#b91c1c" }}>
               Error
             </div>
-            <p className="text-sm text-gray-700 whitespace-pre-wrap">
+            <div style={{ height: 8 }} />
+            <p className="sub" style={{ whiteSpace: "pre-wrap" }}>
               {errorMsg || "Failed to generate brief"}
             </p>
-            <div className="flex gap-2">
-              <button
-                onClick={onRegenerate}
-                className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-black"
-              >
-                Retry
-              </button>
-              <button
-                onClick={() => router.push("/")}
-                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-              >
-                Back
-              </button>
-            </div>
+            <div style={{ height: 12 }} />
+            <button className="btn btnPrimary" onClick={regenerate}>
+              Retry
+            </button>
           </section>
         )}
 
-        {/* Content */}
+        {/* Success */}
         {status === "success" && data && (
           <>
-            {/* Recommendation */}
-            <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-3">
-              <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
-                Recommendation
-              </div>
-
-              <div className="text-xl font-semibold text-gray-900">
-                {data.topPick?.name || "Top pick"}
-              </div>
-
-              <p className="text-base text-gray-800">
-                {data.topPick?.why || "Clear reason."}
-              </p>
-
-              <p className="text-sm text-gray-500">
-                Trade-off: {data.topPick?.tradeoff || "—"}
-              </p>
-            </section>
-
-            {/* Table */}
-            <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-4">
-              <div className="flex items-end justify-between gap-4">
+            {/* Pickle suggests */}
+            <section className="card" style={{ padding: 18 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                }}
+              >
                 <div>
-                  <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
-                    Comparison
+                  <div className="label">Pickle suggests</div>
+                  <div style={{ height: 6 }} />
+                  <div style={{ fontSize: 18, fontWeight: 750 }}>
+                    {clampText(data.topPick?.name ?? "Top pick", 80)}
                   </div>
-                  <p className="text-sm text-gray-500 mt-1">
-                    Short, scannable values. “—” means unknown.
-                  </p>
+                </div>
+
+                <div
+                  style={{
+                    fontSize: 12,
+                    padding: "8px 10px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(15,23,42,0.12)",
+                    background: "rgba(37,99,235,0.10)",
+                    color: "#1e40af",
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  AI assistant: Pickle
                 </div>
               </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-200 text-gray-500">
-                      <th className="py-3 text-left font-medium pr-4">Item</th>
+              <div style={{ height: 10 }} />
+              <p className="sub" style={{ color: "#0b1220" }}>
+                {clampText(data.topPick?.why ?? "", 160)}
+              </p>
+              <div style={{ height: 6 }} />
+              <p className="sub" style={{ fontSize: 14 }}>
+                <b>Trade-off:</b> {clampText(data.topPick?.tradeoff ?? "", 140)}
+              </p>
+            </section>
 
-                      {data.columns.map((col, idx) => (
-                        <th key={`${col}-${idx}`} className="py-3 text-left font-medium pr-4">
+            <div style={{ height: 16 }} />
+
+            {/* Table */}
+            <section className="card" style={{ padding: 18 }}>
+              <div className="label" style={{ marginBottom: 10 }}>
+                Comparison table
+              </div>
+
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ textAlign: "left" }}>
+                      <th style={{ padding: "10px 10px", borderBottom: "1px solid var(--border)" }}>
+                        Item
+                      </th>
+                      {(data.columns ?? []).map((col, idx) => (
+                        <th
+                          key={`${col}-${idx}`}
+                          style={{ padding: "10px 10px", borderBottom: "1px solid var(--border)" }}
+                          title={(data.columnHelp ?? [])[idx] ?? ""}
+                        >
                           {col}
                         </th>
                       ))}
-
-                      <th className="py-3 text-left font-medium">Notes</th>
+                      <th style={{ padding: "10px 10px", borderBottom: "1px solid var(--border)" }}>
+                        Notes
+                      </th>
                     </tr>
                   </thead>
 
                   <tbody>
-                    {data.rows.map((row, rIdx) => (
-                      <tr key={`${row.name}-${rIdx}`} className="border-b last:border-0">
-                        <td className="py-3 pr-4 font-medium text-gray-900 whitespace-nowrap">
+                    {(data.rows ?? []).map((row, rIdx) => (
+                      <tr key={`${row.name}-${rIdx}`}>
+                        <td style={{ padding: "12px 10px", borderBottom: "1px solid var(--border)", fontWeight: 650 }}>
                           {row.name}
                         </td>
-
-                        {data.columns.map((_, cIdx) => (
-                          <td key={`${row.name}-${cIdx}`} className="py-3 pr-4 text-gray-800">
-                            {(row.values?.[cIdx] ?? "").trim() || "—"}
+                        {(data.columns ?? []).map((_, cIdx) => (
+                          <td key={`${rIdx}-${cIdx}`} style={{ padding: "12px 10px", borderBottom: "1px solid var(--border)" }}>
+                            {clampText((row.values ?? [])[cIdx] ?? "", 60) || "—"}
                           </td>
                         ))}
-
-                        <td className="py-3 text-gray-500">
-                          {(row.notes ?? "").trim() || "—"}
+                        <td style={{ padding: "12px 10px", borderBottom: "1px solid var(--border)" }}>
+                          {clampText(row.notes ?? "", 80) || "—"}
                         </td>
                       </tr>
                     ))}
@@ -421,30 +389,27 @@ export default function BriefClient() {
               </div>
             </section>
 
+            <div style={{ height: 16 }} />
+
             {/* Sources */}
-            <section className="rounded-2xl border border-gray-200 bg-white p-6 space-y-3">
-              <div className="text-sm font-medium tracking-wide uppercase text-gray-500">
+            <section className="card" style={{ padding: 18 }}>
+              <div className="label" style={{ marginBottom: 10 }}>
                 Sources
               </div>
-
-              {data.sources?.length ? (
-                <ul className="space-y-2">
-                  {data.sources.map((s, idx) => (
-                    <li key={`${s.url}-${idx}`} className="text-sm">
-                      <a
-                        href={s.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-blue-700 hover:text-blue-900 underline underline-offset-2"
-                      >
-                        {s.title || s.url}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-sm text-gray-500">No sources provided.</p>
-              )}
+              <ul style={{ paddingLeft: 18, margin: 0 }}>
+                {(data.sources ?? []).map((s, idx) => (
+                  <li key={`${s.url}-${idx}`} style={{ marginBottom: 8 }}>
+                    <a
+                      href={s.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: "#2563eb", textDecoration: "underline" }}
+                    >
+                      {s.title || s.url}
+                    </a>
+                  </li>
+                ))}
+              </ul>
             </section>
           </>
         )}
