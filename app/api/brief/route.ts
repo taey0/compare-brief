@@ -2,6 +2,16 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: corsHeaders });
+}
+
 type Source = { title: string; url: string };
 
 type Brief = {
@@ -123,13 +133,13 @@ export async function POST(req: Request) {
     const finalQuery = query || "example: best noise cancelling headphones for calls";
     const demo = makeDemoBrief(finalQuery, constraints, columns);
 
-    return NextResponse.json(demo, { status: 200 });
+    return NextResponse.json(demo, { status: 200, headers: corsHeaders });
   } catch {
     const demo = makeDemoBrief(
       "example: best noise cancelling headphones for calls",
       "None",
       ["Price", "Key feature", "Best for", "Downside", "Notes"]
     );
-    return NextResponse.json({ ...demo, _mode: "demo_catch_all" }, { status: 200 });
+    return NextResponse.json({ ...demo, _mode: "demo_catch_all" }, { status: 200, headers: corsHeaders });
   }
 }

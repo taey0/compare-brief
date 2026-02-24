@@ -6,9 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "build:cap": "CAPACITOR_BUILD=1 next build",
+    "cap:sync": "npm run build:cap && npx cap sync ios",
+    "cap:open": "npx cap open ios"
   },
   "dependencies": {
+    "@capacitor/core": "^8.1.0",
+    "@capacitor/ios": "^8.1.0",
     "lz-string": "^1.5.0",
     "next": "16.1.1",
     "openai": "^6.15.0",
@@ -16,6 +21,7 @@
     "react-dom": "19.2.3"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.1.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

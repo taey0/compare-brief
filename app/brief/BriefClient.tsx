@@ -44,12 +44,24 @@ function writeStore(store: Record<string, Brief>) {
   } catch {}
 }
 
+function getApiBase() {
+  if (typeof window === "undefined") return "";
+  // In Capacitor, content is served from capacitor:// or file://
+  const proto = window.location.protocol;
+  if (proto === "capacitor:" || proto === "file:") {
+    return "https://compare-brief.vercel.app";
+  }
+  return "";
+}
+
+const API_BASE = getApiBase();
+
 async function fetchBrief(payload: {
   query: string;
   constraints: string;
   columns: string[];
 }): Promise<Brief> {
-  const res = await fetch("/api/brief", {
+  const res = await fetch(`${API_BASE}/api/brief`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
