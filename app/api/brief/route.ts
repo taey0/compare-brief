@@ -90,16 +90,16 @@ function makeDemoBrief(query: string, constraints: string, columns: string[]): B
     constraints: constraints || "None",
     topPick: {
       name: items[0].name,
-      why: "Demo result to showcase how ClearPick structures a comparison grid.",
+      why: "Demo result to showcase how Pickle structures a comparison grid.",
       tradeoff: "Live sources + real links appear when API mode is enabled later.",
     },
     columns,
     columnHelp: [
-      "Quick comparison 기준",
-      "핵심 기능/품질",
-      "누구에게 좋은지",
-      "호환/제약",
-      "추가 메모",
+      "Quick comparison metric",
+      "Core features & quality",
+      "Best target audience",
+      "Compatibility & limits",
+      "Additional notes",
     ].slice(0, columns.length),
     rows: items.map((r) => ({
       name: r.name,
@@ -112,7 +112,7 @@ function makeDemoBrief(query: string, constraints: string, columns: string[]): B
 }
 
 export async function POST(req: Request) {
-  // ✅ 어떤 경우에도 반드시 Response를 return 하도록 "단순 구조"로 작성
+  // Always return a Response
   try {
     const body = await req.json().catch(() => ({} as any));
 

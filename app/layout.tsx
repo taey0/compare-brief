@@ -2,13 +2,17 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ClearPick",
-  description: "Turn any question into a clean comparison grid.",
-  applicationName: "ClearPick",
+  title: "Pickle",
+  description: "Pick the best. Skip the rest. Compare anything in seconds.",
+  applicationName: "Pickle",
   appleWebApp: {
     capable: true,
-    title: "ClearPick",
+    title: "Pickle",
     statusBarStyle: "default",
+  },
+  icons: {
+    icon: "/favicon.svg",
+    apple: "/apple-touch-icon.png",
   },
 };
 

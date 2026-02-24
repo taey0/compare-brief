@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import LZString from "lz-string";
 
+/* ── Types ── */
 type Source = { title: string; url: string };
 
 type Brief = {
@@ -14,16 +15,17 @@ type Brief = {
   columnHelp: string[];
   rows: { name: string; values: string[]; notes: string }[];
   sources: Source[];
-  _mode?: string; // demo_no_key / demo_quota / live ...
+  _mode?: string;
 };
 
-const STORAGE_KEY = "clearpick:v1";
+/* ── Helpers ── */
+const STORAGE_KEY = "pickle:v1";
 
 function clampText(s: string, max = 130) {
   const t = (s ?? "").toString().trim();
   if (!t) return "";
   if (t.length <= max) return t;
-  return t.slice(0, max - 1).trimEnd() + "…";
+  return t.slice(0, max - 1).trimEnd() + "\u2026";
 }
 
 function readStore(): Record<string, Brief> {
@@ -65,8 +67,7 @@ async function fetchBrief(payload: {
 }
 
 function encodePortable(b: Brief) {
-  const json = JSON.stringify(b);
-  return LZString.compressToEncodedURIComponent(json);
+  return LZString.compressToEncodedURIComponent(JSON.stringify(b));
 }
 
 function decodePortable(s: string): Brief | null {
@@ -79,6 +80,54 @@ function decodePortable(s: string): Brief | null {
   }
 }
 
+/* ── Icons (minimal) ── */
+function IconBack() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 12L6 8l4-4" />
+    </svg>
+  );
+}
+
+function IconShare() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 8v5a1 1 0 001 1h6a1 1 0 001-1V8" />
+      <polyline points="8 2 8 10" />
+      <polyline points="5 5 8 2 11 5" />
+    </svg>
+  );
+}
+
+function IconRedo() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14.5 2v4.5h-4.5" />
+      <path d="M12.9 10a5.5 5.5 0 11-8.8-5.5l10.4 2" />
+    </svg>
+  );
+}
+
+function PickleLogo() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+      <rect width="28" height="28" rx="7" fill="#1a7f37" />
+      <text
+        x="14"
+        y="19.5"
+        textAnchor="middle"
+        fill="white"
+        fontSize="16"
+        fontWeight="800"
+        fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+      >
+        P
+      </text>
+    </svg>
+  );
+}
+
+/* ── Component ── */
 export default function BriefClient() {
   const router = useRouter();
   const params = useSearchParams();
@@ -97,320 +146,310 @@ export default function BriefClient() {
     "Drawback",
     "Where to buy",
   ]);
-
+  const [showCriteria, setShowCriteria] = useState(false);
   const [data, setData] = useState<Brief | null>(null);
-  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">(
-    "idle"
-  );
-  const [errorMsg, setErrorMsg] = useState<string>("");
+  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const query = useMemo(() => qParam || defaultQuery, [qParam]);
   const constraints = useMemo(() => cParam || "", [cParam]);
 
-  // Load shared links
+  /* ── Data loading ── */
   useEffect(() => {
     if (dataParam) {
       const decoded = decodePortable(dataParam);
-      if (decoded) {
-        setData(decoded);
-        setStatus("success");
-      }
+      if (decoded) { setData(decoded); setStatus("success"); }
     }
   }, [dataParam]);
 
-  // Load local storage by id
   useEffect(() => {
     if (!idParam) return;
     const store = readStore();
     const found = store[idParam];
-    if (found) {
-      setData(found);
-      setStatus("success");
-    }
+    if (found) { setData(found); setStatus("success"); }
   }, [idParam]);
 
-  // Generate (only if not loaded from share/local)
   useEffect(() => {
-    if (dataParam) return;
-    if (idParam) return;
-
+    if (dataParam || idParam) return;
     let cancelled = false;
 
     async function run() {
       setStatus("loading");
       setErrorMsg("");
       setData(null);
-
       try {
         const result = await fetchBrief({ query, constraints, columns });
         if (cancelled) return;
-
         setData(result);
         setStatus("success");
-      } catch (e: any) {
+      } catch (e: unknown) {
         if (cancelled) return;
-        setErrorMsg(e?.message ?? "Failed to generate brief");
+        setErrorMsg(e instanceof Error ? e.message : "Failed to generate brief");
         setStatus("error");
       }
     }
 
     run();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [query, constraints, columns, dataParam, idParam]);
 
-  function shareLocal() {
-    if (!data) return;
-    const store = readStore();
-    const id = Math.random().toString(36).slice(2, 10);
-    store[id] = data;
-    writeStore(store);
-    router.push(`/brief?id=${encodeURIComponent(id)}`);
-  }
-
+  /* ── Actions ── */
   function sharePortable() {
     if (!data) return;
     const packed = encodePortable(data);
-    router.push(`/brief?data=${packed}`);
+    const url = `${window.location.origin}/brief?data=${packed}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   }
 
   function regenerate() {
-    router.push(`/brief?q=${encodeURIComponent(query)}&c=${encodeURIComponent(constraints)}`);
+    router.push(
+      `/brief?q=${encodeURIComponent(query)}&c=${encodeURIComponent(constraints)}`
+    );
   }
 
   return (
     <main>
       <div className="container">
-        {/* Top bar */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-          }}
-        >
-          <button className="btn" onClick={() => router.push("/")}>
-            ← Back
-          </button>
+        {/* ── Nav ── */}
+        <nav className="nav">
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => router.push("/")}
+              aria-label="Back"
+              style={{ padding: "0 6px" }}
+            >
+              <IconBack />
+            </button>
+            <div
+              className="nav-brand"
+              style={{ cursor: "pointer" }}
+              onClick={() => router.push("/")}
+            >
+              <PickleLogo />
+              Pickle
+            </div>
+          </div>
 
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <div className="label">ClearPick</div>
-            <button className="btn" onClick={sharePortable} disabled={!data}>
-              Share (Portable)
+          <div className="nav-actions">
+            <button
+              className="btn btn-sm"
+              onClick={sharePortable}
+              disabled={!data}
+            >
+              <IconShare /> {copied ? "Copied!" : "Share"}
             </button>
-            <button className="btn" onClick={shareLocal} disabled={!data}>
-              Share (Local)
-            </button>
-            <button className="btn btnPrimary" onClick={regenerate}>
-              Regenerate
+            <button className="btn btn-primary btn-sm" onClick={regenerate}>
+              <IconRedo /> Redo
             </button>
           </div>
+        </nav>
+
+        {/* ── Query ── */}
+        <div style={{ marginTop: 20 }}>
+          <h1 className="h1">{query}</h1>
+          {constraints && (
+            <p className="text-sm text-muted" style={{ marginTop: 4 }}>
+              {constraints}
+            </p>
+          )}
         </div>
 
-        <div style={{ height: 18 }} />
+        {/* ── Criteria toggle ── */}
+        <div style={{ marginTop: 16 }}>
+          <button
+            className="btn btn-sm"
+            onClick={() => setShowCriteria(!showCriteria)}
+          >
+            {showCriteria ? "Hide columns" : "Edit columns"}
+            <span className="badge badge-muted" style={{ marginLeft: 2 }}>
+              {columns.filter(Boolean).length}
+            </span>
+          </button>
 
-        {/* Header */}
-        <div className="label">COMPARISON GRID</div>
-        <div style={{ height: 10 }} />
-        <h1 className="h1">{query}</h1>
-        <div style={{ height: 10 }} />
-        <p className="sub">
-          {constraints ? `Constraints: ${constraints}` : "No constraints"}
-          {data?._mode ? ` · Mode: ${data._mode}` : ""}
-        </p>
+          {showCriteria && (
+            <div className="card" style={{ marginTop: 8, padding: 14 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+                  gap: 8,
+                }}
+              >
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <input
+                    key={i}
+                    className="input"
+                    value={columns[i] ?? ""}
+                    onChange={(e) => {
+                      const next = [...columns];
+                      next[i] = e.target.value;
+                      setColumns(next);
+                    }}
+                    placeholder={["Price", "Feature", "Best for", "Downside", "Notes"][i]}
+                    style={{ height: 36, fontSize: 13 }}
+                  />
+                ))}
+              </div>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={regenerate}
+                style={{ marginTop: 10 }}
+              >
+                Apply
+              </button>
+            </div>
+          )}
+        </div>
 
-        <div style={{ height: 20 }} />
-
-        {/* Criteria editor */}
-        <section className="card" style={{ padding: 18 }}>
-          <div className="label" style={{ marginBottom: 10 }}>
-            Criteria
-          </div>
-          <p className="sub" style={{ fontSize: 14, marginBottom: 14 }}>
-            Edit up to 5 columns, then regenerate.
-          </p>
-
+        {/* ── Loading ── */}
+        {status === "loading" && (
           <div
             style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+              marginTop: 48,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
               gap: 12,
             }}
           >
-            {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i}>
-                <div className="label" style={{ marginBottom: 6 }}>
-                  Column {i + 1}
-                </div>
-                <input
-                  className="input"
-                  value={columns[i] ?? ""}
-                  onChange={(e) => {
-                    const next = [...columns];
-                    next[i] = e.target.value;
-                    setColumns(next);
-                  }}
-                  placeholder={`e.g. ${["Price", "Battery", "Comfort", "Shipping", "Warranty"][i]}`}
-                />
-              </div>
-            ))}
+            <div className="spinner" />
+            <p className="text-sm text-muted">Comparing options...</p>
           </div>
-
-          <div style={{ height: 12 }} />
-          <button className="btn btnPrimary" onClick={regenerate}>
-            Regenerate
-          </button>
-        </section>
-
-        <div style={{ height: 16 }} />
-
-        {/* Loading / Error */}
-        {status === "loading" && (
-          <section className="card" style={{ padding: 18 }}>
-            <div className="label">Generating…</div>
-            <div style={{ height: 8 }} />
-            <p className="sub">Pickle is comparing options.</p>
-          </section>
         )}
 
+        {/* ── Error ── */}
         {status === "error" && (
-          <section className="card" style={{ padding: 18 }}>
-            <div className="label" style={{ color: "#b91c1c" }}>
-              Error
-            </div>
-            <div style={{ height: 8 }} />
-            <p className="sub" style={{ whiteSpace: "pre-wrap" }}>
-              {errorMsg || "Failed to generate brief"}
+          <div
+            className="card"
+            style={{ marginTop: 24, padding: 20, borderColor: "#fecaca" }}
+          >
+            <p className="h3" style={{ color: "var(--danger)" }}>
+              Something went wrong
             </p>
-            <div style={{ height: 12 }} />
-            <button className="btn btnPrimary" onClick={regenerate}>
+            <p className="text-sm text-muted" style={{ marginTop: 4 }}>
+              {errorMsg}
+            </p>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={regenerate}
+              style={{ marginTop: 10 }}
+            >
               Retry
             </button>
-          </section>
+          </div>
         )}
 
-        {/* Success */}
+        {/* ── Results ── */}
         {status === "success" && data && (
           <>
-            {/* Pickle suggests */}
-            <section className="card" style={{ padding: 18 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 10,
-                }}
-              >
-                <div>
-                  <div className="label">Pickle suggests</div>
-                  <div style={{ height: 6 }} />
-                  <div style={{ fontSize: 18, fontWeight: 750 }}>
-                    {clampText(data.topPick?.name ?? "Top pick", 80)}
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    fontSize: 12,
-                    padding: "8px 10px",
-                    borderRadius: 999,
-                    border: "1px solid rgba(15,23,42,0.12)",
-                    background: "rgba(37,99,235,0.10)",
-                    color: "#1e40af",
-                    fontWeight: 700,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  AI assistant: Pickle
-                </div>
+            {/* Top Pick */}
+            <div
+              className="card"
+              style={{
+                marginTop: 24,
+                padding: "16px 20px",
+                borderLeft: "4px solid var(--primary)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="badge badge-primary">Top pick</span>
               </div>
-
-              <div style={{ height: 10 }} />
-              <p className="sub" style={{ color: "#0b1220" }}>
-                {clampText(data.topPick?.why ?? "", 160)}
+              <div className="h2" style={{ marginTop: 6 }}>
+                {clampText(data.topPick?.name ?? "Top pick", 80)}
+              </div>
+              <p className="text-sm text-secondary" style={{ marginTop: 6, lineHeight: 1.6 }}>
+                {clampText(data.topPick?.why ?? "", 200)}
               </p>
-              <div style={{ height: 6 }} />
-              <p className="sub" style={{ fontSize: 14 }}>
-                <b>Trade-off:</b> {clampText(data.topPick?.tradeoff ?? "", 140)}
-              </p>
-            </section>
-
-            <div style={{ height: 16 }} />
+              {data.topPick?.tradeoff && (
+                <p className="text-sm text-muted" style={{ marginTop: 6 }}>
+                  <strong>Trade-off:</strong> {clampText(data.topPick.tradeoff, 160)}
+                </p>
+              )}
+            </div>
 
             {/* Table */}
-            <section className="card" style={{ padding: 18 }}>
-              <div className="label" style={{ marginBottom: 10 }}>
-                Comparison table
+            <div style={{ marginTop: 24 }}>
+              <div className="section-header">
+                <span className="label">Comparison</span>
+                <span className="badge badge-muted">{(data.rows ?? []).length} options</span>
               </div>
 
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ textAlign: "left" }}>
-                      <th style={{ padding: "10px 10px", borderBottom: "1px solid var(--border)" }}>
-                        Item
-                      </th>
-                      {(data.columns ?? []).map((col, idx) => (
-                        <th
-                          key={`${col}-${idx}`}
-                          style={{ padding: "10px 10px", borderBottom: "1px solid var(--border)" }}
-                          title={(data.columnHelp ?? [])[idx] ?? ""}
-                        >
-                          {col}
-                        </th>
-                      ))}
-                      <th style={{ padding: "10px 10px", borderBottom: "1px solid var(--border)" }}>
-                        Notes
-                      </th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {(data.rows ?? []).map((row, rIdx) => (
-                      <tr key={`${row.name}-${rIdx}`}>
-                        <td style={{ padding: "12px 10px", borderBottom: "1px solid var(--border)", fontWeight: 650 }}>
-                          {row.name}
-                        </td>
-                        {(data.columns ?? []).map((_, cIdx) => (
-                          <td key={`${rIdx}-${cIdx}`} style={{ padding: "12px 10px", borderBottom: "1px solid var(--border)" }}>
-                            {clampText((row.values ?? [])[cIdx] ?? "", 60) || "—"}
-                          </td>
+              <div className="card" style={{ overflow: "hidden" }}>
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Option</th>
+                        {(data.columns ?? []).map((col, idx) => (
+                          <th key={`${col}-${idx}`} title={(data.columnHelp ?? [])[idx] ?? ""}>
+                            {col}
+                          </th>
                         ))}
-                        <td style={{ padding: "12px 10px", borderBottom: "1px solid var(--border)" }}>
-                          {clampText(row.notes ?? "", 80) || "—"}
-                        </td>
+                        <th>Notes</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {(data.rows ?? []).map((row, rIdx) => (
+                        <tr key={`${row.name}-${rIdx}`}>
+                          <td>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              {row.name === data.topPick?.name && (
+                                <span
+                                  style={{
+                                    width: 7,
+                                    height: 7,
+                                    borderRadius: "50%",
+                                    background: "var(--primary)",
+                                    flexShrink: 0,
+                                  }}
+                                />
+                              )}
+                              {row.name}
+                            </span>
+                          </td>
+                          {(data.columns ?? []).map((_, cIdx) => (
+                            <td key={`${rIdx}-${cIdx}`}>
+                              {clampText((row.values ?? [])[cIdx] ?? "", 60) || "\u2014"}
+                            </td>
+                          ))}
+                          <td className="text-sm text-muted">
+                            {clampText(row.notes ?? "", 80) || "\u2014"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </section>
-
-            <div style={{ height: 16 }} />
+            </div>
 
             {/* Sources */}
-            <section className="card" style={{ padding: 18 }}>
-              <div className="label" style={{ marginBottom: 10 }}>
-                Sources
-              </div>
-              <ul style={{ paddingLeft: 18, margin: 0 }}>
-                {(data.sources ?? []).map((s, idx) => (
-                  <li key={`${s.url}-${idx}`} style={{ marginBottom: 8 }}>
+            {(data.sources ?? []).length > 0 && (
+              <div style={{ marginTop: 20 }}>
+                <span className="label">Sources</span>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+                  {(data.sources ?? []).map((s, idx) => (
                     <a
+                      key={`${s.url}-${idx}`}
                       href={s.url}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ color: "#2563eb", textDecoration: "underline" }}
+                      className="chip"
+                      style={{ textDecoration: "none", fontSize: 12 }}
                     >
-                      {s.title || s.url}
+                      {s.title || new URL(s.url).hostname}
                     </a>
-                  </li>
-                ))}
-              </ul>
-            </section>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ height: 40 }} />
           </>
         )}
       </div>
