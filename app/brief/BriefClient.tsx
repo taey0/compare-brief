@@ -1,26 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import LZString from "lz-string";
-
-/* ── Types ── */
-type Source = { title: string; url: string };
-
-type Brief = {
-  query: string;
-  constraints: string;
-  topPick: { name: string; why: string; tradeoff: string };
-  columns: string[];
-  columnHelp: string[];
-  rows: { name: string; values: string[]; notes: string }[];
-  sources: Source[];
-  _mode?: string;
-};
+import { IconBack, IconMore, IconShare, IconRedo, IconNewSearch } from "../components/Icons";
+import TabBar from "../components/TabBar";
+import { type Brief, readStore, saveToHistory } from "../lib/storage";
 
 /* ── Helpers ── */
-const STORAGE_KEY = "pickle:v1";
-
 function clampText(s: string, max = 130) {
   const t = (s ?? "").toString().trim();
   if (!t) return "";
@@ -28,25 +15,8 @@ function clampText(s: string, max = 130) {
   return t.slice(0, max - 1).trimEnd() + "\u2026";
 }
 
-function readStore(): Record<string, Brief> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-
-function writeStore(store: Record<string, Brief>) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-  } catch {}
-}
-
 function getApiBase() {
   if (typeof window === "undefined") return "";
-  // In Capacitor, content is served from capacitor:// or file://
   const proto = window.location.protocol;
   if (proto === "capacitor:" || proto === "file:") {
     return "https://compare-brief.vercel.app";
@@ -92,57 +62,11 @@ function decodePortable(s: string): Brief | null {
   }
 }
 
-/* ── Icons (minimal) ── */
-function IconBack() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M10 12L6 8l4-4" />
-    </svg>
-  );
-}
-
-function IconShare() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 8v5a1 1 0 001 1h6a1 1 0 001-1V8" />
-      <polyline points="8 2 8 10" />
-      <polyline points="5 5 8 2 11 5" />
-    </svg>
-  );
-}
-
-function IconRedo() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14.5 2v4.5h-4.5" />
-      <path d="M12.9 10a5.5 5.5 0 11-8.8-5.5l10.4 2" />
-    </svg>
-  );
-}
-
-function PickleLogo() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
-      <rect width="28" height="28" rx="7" fill="#1a7f37" />
-      <text
-        x="14"
-        y="19.5"
-        textAnchor="middle"
-        fill="white"
-        fontSize="16"
-        fontWeight="800"
-        fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
-      >
-        P
-      </text>
-    </svg>
-  );
-}
-
 /* ── Component ── */
 export default function BriefClient() {
   const router = useRouter();
   const params = useSearchParams();
+  const savedRef = useRef(false);
 
   const qParam = (params.get("q") ?? "").trim();
   const cParam = (params.get("c") ?? "").trim();
@@ -150,22 +74,24 @@ export default function BriefClient() {
   const dataParam = (params.get("data") ?? "").trim();
 
   const defaultQuery = "Best noise cancelling headphones for calls";
+  const defaultColumns = ["Price", "Key feature", "Best for", "Drawback", "Where to buy"];
 
-  const [columns, setColumns] = useState<string[]>([
-    "Price",
-    "Key feature",
-    "Best for",
-    "Drawback",
-    "Where to buy",
-  ]);
-  const [showCriteria, setShowCriteria] = useState(false);
   const [data, setData] = useState<Brief | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [copied, setCopied] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const query = useMemo(() => qParam || defaultQuery, [qParam]);
   const constraints = useMemo(() => cParam || "", [cParam]);
+
+  /* ── Auto-save to history on success ── */
+  useEffect(() => {
+    if (status === "success" && data && !savedRef.current && !idParam && !dataParam) {
+      savedRef.current = true;
+      saveToHistory(data);
+    }
+  }, [status, data, idParam, dataParam]);
 
   /* ── Data loading ── */
   useEffect(() => {
@@ -190,8 +116,9 @@ export default function BriefClient() {
       setStatus("loading");
       setErrorMsg("");
       setData(null);
+      savedRef.current = false;
       try {
-        const result = await fetchBrief({ query, constraints, columns });
+        const result = await fetchBrief({ query, constraints, columns: defaultColumns });
         if (cancelled) return;
         setData(result);
         setStatus("success");
@@ -204,7 +131,7 @@ export default function BriefClient() {
 
     run();
     return () => { cancelled = true; };
-  }, [query, constraints, columns, dataParam, idParam]);
+  }, [query, constraints, dataParam, idParam]);
 
   /* ── Actions ── */
   function sharePortable() {
@@ -224,46 +151,67 @@ export default function BriefClient() {
   }
 
   return (
-    <main>
-      <div className="container">
+    <main className="page-with-tabs">
+      <div className="container" style={{ paddingTop: "calc(env(safe-area-inset-top) + 12px)" }}>
         {/* ── Nav ── */}
-        <nav className="nav">
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <nav style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          height: 44,
+        }}>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => router.push("/")}
+            aria-label="Back"
+            style={{ padding: "0 6px", marginLeft: -6 }}
+          >
+            <IconBack />
+          </button>
+
+          <div style={{ position: "relative" }}>
             <button
               className="btn btn-ghost btn-sm"
-              onClick={() => router.push("/")}
-              aria-label="Back"
-              style={{ padding: "0 6px" }}
+              onClick={() => setMenuOpen(!menuOpen)}
+              aria-label="More actions"
+              style={{ padding: "0 8px" }}
             >
-              <IconBack />
+              <IconMore />
             </button>
-            <div
-              className="nav-brand"
-              style={{ cursor: "pointer" }}
-              onClick={() => router.push("/")}
-            >
-              <PickleLogo />
-              Pickle
-            </div>
-          </div>
 
-          <div className="nav-actions">
-            <button
-              className="btn btn-sm"
-              onClick={sharePortable}
-              disabled={!data}
-            >
-              <IconShare /> {copied ? "Copied!" : "Share"}
-            </button>
-            <button className="btn btn-primary btn-sm" onClick={regenerate}>
-              <IconRedo /> Redo
-            </button>
+            {menuOpen && (
+              <>
+                <div
+                  style={{ position: "fixed", inset: 0, zIndex: 90 }}
+                  onClick={() => setMenuOpen(false)}
+                />
+                <div className="dropdown-menu">
+                  <button className="dropdown-item" onClick={() => { sharePortable(); setMenuOpen(false); }}>
+                    <IconShare /> Copy share link
+                  </button>
+                  <button className="dropdown-item" onClick={() => { regenerate(); setMenuOpen(false); }}>
+                    <IconRedo /> Regenerate
+                  </button>
+                  <button className="dropdown-item" onClick={() => { router.push("/"); setMenuOpen(false); }}>
+                    <IconNewSearch /> New comparison
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </nav>
 
-        {/* ── Query ── */}
-        <div style={{ marginTop: 20 }}>
-          <h1 className="h1">{query}</h1>
+        {/* ── Query title ── */}
+        <div style={{ marginTop: 4 }}>
+          <h1 style={{
+            fontSize: 24,
+            fontWeight: 750,
+            letterSpacing: "-0.03em",
+            lineHeight: 1.2,
+            color: "var(--fg)",
+          }}>
+            {query}
+          </h1>
           {constraints && (
             <p className="text-sm text-muted" style={{ marginTop: 4 }}>
               {constraints}
@@ -271,76 +219,24 @@ export default function BriefClient() {
           )}
         </div>
 
-        {/* ── Criteria toggle ── */}
-        <div style={{ marginTop: 16 }}>
-          <button
-            className="btn btn-sm"
-            onClick={() => setShowCriteria(!showCriteria)}
-          >
-            {showCriteria ? "Hide columns" : "Edit columns"}
-            <span className="badge badge-muted" style={{ marginLeft: 2 }}>
-              {columns.filter(Boolean).length}
-            </span>
-          </button>
-
-          {showCriteria && (
-            <div className="card" style={{ marginTop: 8, padding: 14 }}>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
-                  gap: 8,
-                }}
-              >
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <input
-                    key={i}
-                    className="input"
-                    value={columns[i] ?? ""}
-                    onChange={(e) => {
-                      const next = [...columns];
-                      next[i] = e.target.value;
-                      setColumns(next);
-                    }}
-                    placeholder={["Price", "Feature", "Best for", "Downside", "Notes"][i]}
-                    style={{ height: 36, fontSize: 13 }}
-                  />
-                ))}
-              </div>
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={regenerate}
-                style={{ marginTop: 10 }}
-              >
-                Apply
-              </button>
-            </div>
-          )}
-        </div>
-
         {/* ── Loading ── */}
         {status === "loading" && (
-          <div
-            style={{
-              marginTop: 48,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 12,
-            }}
-          >
+          <div style={{
+            marginTop: 60,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 12,
+          }}>
             <div className="spinner" />
-            <p className="text-sm text-muted">Comparing options...</p>
+            <p className="text-sm text-muted">Comparing...</p>
           </div>
         )}
 
         {/* ── Error ── */}
         {status === "error" && (
-          <div
-            className="card"
-            style={{ marginTop: 24, padding: 20, borderColor: "#fecaca" }}
-          >
-            <p className="h3" style={{ color: "var(--danger)" }}>
+          <div style={{ marginTop: 32, textAlign: "center" }}>
+            <p style={{ fontSize: 14, color: "var(--danger)", fontWeight: 600 }}>
               Something went wrong
             </p>
             <p className="text-sm text-muted" style={{ marginTop: 4 }}>
@@ -349,7 +245,7 @@ export default function BriefClient() {
             <button
               className="btn btn-primary btn-sm"
               onClick={regenerate}
-              style={{ marginTop: 10 }}
+              style={{ marginTop: 12 }}
             >
               Retry
             </button>
@@ -360,35 +256,53 @@ export default function BriefClient() {
         {status === "success" && data && (
           <>
             {/* Top Pick */}
-            <div
-              className="card"
-              style={{
-                marginTop: 24,
-                padding: "16px 20px",
-                borderLeft: "4px solid var(--primary)",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span className="badge badge-primary">Top pick</span>
+            <div style={{
+              marginTop: 20,
+              padding: "14px 16px",
+              background: "var(--primary-weak)",
+              borderRadius: 12,
+              borderLeft: "3px solid var(--primary)",
+            }}>
+              <span style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: "var(--primary)",
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+              }}>
+                Top pick
+              </span>
+              <div style={{
+                fontSize: 18,
+                fontWeight: 700,
+                marginTop: 4,
+                color: "var(--fg)",
+              }}>
+                {clampText(data.topPick?.name ?? "—", 80)}
               </div>
-              <div className="h2" style={{ marginTop: 6 }}>
-                {clampText(data.topPick?.name ?? "Top pick", 80)}
-              </div>
-              <p className="text-sm text-secondary" style={{ marginTop: 6, lineHeight: 1.6 }}>
-                {clampText(data.topPick?.why ?? "", 200)}
+              <p className="text-sm" style={{
+                marginTop: 4,
+                color: "var(--fg-secondary)",
+                lineHeight: 1.5,
+              }}>
+                {clampText(data.topPick?.why ?? "", 160)}
               </p>
               {data.topPick?.tradeoff && (
-                <p className="text-sm text-muted" style={{ marginTop: 6 }}>
-                  <strong>Trade-off:</strong> {clampText(data.topPick.tradeoff, 160)}
+                <p className="text-xs text-muted" style={{ marginTop: 4 }}>
+                  Caveat: {clampText(data.topPick.tradeoff, 120)}
                 </p>
               )}
             </div>
 
             {/* Table */}
-            <div style={{ marginTop: 24 }}>
-              <div className="section-header">
-                <span className="label">Comparison</span>
-                <span className="badge badge-muted">{(data.rows ?? []).length} options</span>
+            <div style={{ marginTop: 20 }}>
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 8,
+              }}>
+                <span className="label">{(data.rows ?? []).length} options compared</span>
               </div>
 
               <div className="card" style={{ overflow: "hidden" }}>
@@ -398,28 +312,23 @@ export default function BriefClient() {
                       <tr>
                         <th>Option</th>
                         {(data.columns ?? []).map((col, idx) => (
-                          <th key={`${col}-${idx}`} title={(data.columnHelp ?? [])[idx] ?? ""}>
-                            {col}
-                          </th>
+                          <th key={`${col}-${idx}`}>{col}</th>
                         ))}
-                        <th>Notes</th>
                       </tr>
                     </thead>
                     <tbody>
                       {(data.rows ?? []).map((row, rIdx) => (
                         <tr key={`${row.name}-${rIdx}`}>
                           <td>
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                               {row.name === data.topPick?.name && (
-                                <span
-                                  style={{
-                                    width: 7,
-                                    height: 7,
-                                    borderRadius: "50%",
-                                    background: "var(--primary)",
-                                    flexShrink: 0,
-                                  }}
-                                />
+                                <span style={{
+                                  width: 6,
+                                  height: 6,
+                                  borderRadius: "50%",
+                                  background: "var(--primary)",
+                                  flexShrink: 0,
+                                }} />
                               )}
                               {row.name}
                             </span>
@@ -429,9 +338,6 @@ export default function BriefClient() {
                               {clampText((row.values ?? [])[cIdx] ?? "", 60) || "\u2014"}
                             </td>
                           ))}
-                          <td className="text-sm text-muted">
-                            {clampText(row.notes ?? "", 80) || "\u2014"}
-                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -442,7 +348,7 @@ export default function BriefClient() {
 
             {/* Sources */}
             {(data.sources ?? []).length > 0 && (
-              <div style={{ marginTop: 20 }}>
+              <div style={{ marginTop: 16 }}>
                 <span className="label">Sources</span>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                   {(data.sources ?? []).map((s, idx) => (
@@ -452,7 +358,7 @@ export default function BriefClient() {
                       target="_blank"
                       rel="noreferrer"
                       className="chip"
-                      style={{ textDecoration: "none", fontSize: 12 }}
+                      style={{ textDecoration: "none", fontSize: 12, height: 28, padding: "0 10px" }}
                     >
                       {s.title || new URL(s.url).hostname}
                     </a>
@@ -461,10 +367,29 @@ export default function BriefClient() {
               </div>
             )}
 
-            <div style={{ height: 40 }} />
+            {/* Copied toast */}
+            {copied && (
+              <div style={{
+                position: "fixed",
+                bottom: 80,
+                left: "50%",
+                transform: "translateX(-50%)",
+                background: "var(--fg)",
+                color: "white",
+                padding: "8px 16px",
+                borderRadius: 8,
+                fontSize: 13,
+                fontWeight: 600,
+                zIndex: 100,
+              }}>
+                Link copied
+              </div>
+            )}
           </>
         )}
       </div>
+
+      <TabBar />
     </main>
   );
 }

@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.pickle.app',
+  appId: 'com.taey0.pickle',
   appName: 'Pickle',
   webDir: 'out'
 };

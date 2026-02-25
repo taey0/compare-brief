@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Pickle",
-  description: "Pick the best. Skip the rest. Compare anything in seconds.",
+  description: "Pick the best. Skip the rest.",
   applicationName: "Pickle",
   appleWebApp: {
     capable: true,
@@ -17,7 +17,12 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#ffffff",
+  themeColor: "#1a7f37",
+  viewportFit: "cover",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({

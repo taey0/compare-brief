@@ -2,7 +2,7 @@
 
 /* ── Design tokens ── */
 :root {
-  --bg: #ffffff;
+  --bg: #f7f8f7;
   --fg: #111111;
   --fg-secondary: #444444;
   --muted: #888888;
@@ -12,6 +12,7 @@
 
   --primary: #1a7f37;
   --primary-hover: #166b2e;
+  --primary-dark: #145f2a;
   --primary-weak: rgba(26, 127, 55, 0.07);
   --primary-medium: rgba(26, 127, 55, 0.15);
   --primary-fg: #ffffff;
@@ -24,6 +25,7 @@
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.1);
   --shadow-focus: 0 0 0 3px rgba(26, 127, 55, 0.25);
 
   --radius-sm: 8px;
@@ -38,6 +40,11 @@
 *, *::before, *::after { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 
+html {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
 body {
   background: var(--bg);
   color: var(--fg);
@@ -47,17 +54,19 @@ body {
   line-height: 1.5;
   letter-spacing: -0.01em;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
 }
 
 /* ── Layout ── */
 .container {
   max-width: 880px;
   margin: 0 auto;
-  padding: 20px 24px;
+  padding: 12px 20px;
 }
 
 @media (max-width: 640px) {
-  .container { padding: 16px; }
+  .container { padding: 12px 16px; }
 }
 
 /* ── Typography ── */
@@ -95,10 +104,60 @@ body {
   color: var(--muted);
 }
 
-.sub {
+/* ── Hero ── */
+.hero {
+  background: linear-gradient(160deg, #1a7f37, #22963f);
+  padding: 40px 0 48px;
+  padding-top: calc(env(safe-area-inset-top) + 40px);
+}
+
+.hero-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 15px;
-  color: var(--muted);
-  line-height: 1.5;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.85);
+  margin-bottom: 10px;
+}
+
+.hero-title {
+  font-size: 32px;
+  font-weight: 750;
+  color: #ffffff;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.hero-subtitle {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-top: 4px;
+}
+
+/* ── Search card ── */
+.search-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 6px 6px 6px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.search-card input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: 15px;
+  outline: none;
+  color: var(--fg);
+  height: 42px;
+}
+
+.search-card input::placeholder {
+  color: var(--muted-light);
 }
 
 /* ── Card ── */
@@ -296,13 +355,126 @@ body {
   white-space: nowrap;
 }
 
+/* ── Dropdown menu ── */
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 200px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition);
+}
+
+.dropdown-item:hover {
+  background: var(--surface-hover);
+}
+
+.dropdown-item:active {
+  background: var(--surface-active);
+}
+
+.dropdown-item + .dropdown-item {
+  border-top: 1px solid var(--border);
+}
+
+/* ── Category card ── */
+.category-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition);
+  text-align: center;
+}
+
+.category-card:hover {
+  border-color: var(--primary-medium);
+  background: var(--primary-weak);
+}
+
+.category-card:active {
+  transform: scale(0.97);
+}
+
+.category-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.category-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+}
+
+/* ── Settings row ── */
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.settings-row:first-child {
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.settings-row:last-child {
+  border-bottom: none;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+.settings-row:only-child {
+  border-radius: var(--radius-lg);
+}
+
+.settings-row:active {
+  background: var(--surface-active);
+}
+
 /* ── Nav ── */
 .nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  height: 52px;
+  gap: 8px;
+  height: 48px;
 }
 
 .nav-brand {
@@ -335,13 +507,6 @@ body {
   margin-bottom: 10px;
 }
 
-/* ── Responsive grid ── */
-.how-it-works { grid-template-columns: repeat(3, 1fr); }
-
-@media (max-width: 640px) {
-  .how-it-works { grid-template-columns: 1fr; gap: 4px; }
-}
-
 /* ── Spinner ── */
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -358,6 +523,58 @@ body {
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.1); border-radius: 3px; }
+
+/* ── Tab bar ── */
+.tab-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-around;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  padding-bottom: calc(env(safe-area-inset-bottom) + 6px);
+  z-index: 50;
+  box-shadow: 0 -1px 8px rgba(0, 0, 0, 0.04);
+}
+
+.tab-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 0 12px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  text-decoration: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  transition: color var(--transition);
+}
+
+.tab-item.active {
+  color: var(--primary);
+}
+
+/* Page with tab bar needs bottom padding */
+.page-with-tabs {
+  padding-bottom: 72px;
+}
+
+/* ── Empty state ── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 20px;
+  text-align: center;
+}
 
 /* ── Focus ── */
 :focus-visible {
